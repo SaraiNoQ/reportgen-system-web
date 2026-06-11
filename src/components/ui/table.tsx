@@ -4,15 +4,27 @@ import { cn } from "@/lib/utils";
 export function DataTable({
   headers,
   children,
-  className
+  className,
+  columns
 }: {
   headers: string[];
   children: ReactNode;
   className?: string;
+  columns?: string[];
 }) {
   return (
-    <div className={cn("table-scroll rounded-lg border border-ink-black/15", className)}>
-      <table className="w-full border-collapse text-left text-sm">
+    <div className={cn("table-scroll rounded-lg border border-ink-black/15", className)} style={columns ? { overflowX: "hidden" } : undefined}>
+      <table
+        className={cn("w-full border-collapse text-sm", columns ? "text-center" : "text-left")}
+        style={columns ? { tableLayout: "fixed", textAlign: "center" } : undefined}
+      >
+        {columns ? (
+          <colgroup>
+            {columns.map((width, index) => (
+              <col key={`${width}-${index}`} style={{ width }} />
+            ))}
+          </colgroup>
+        ) : null}
         <thead className="bg-ink-black text-parchment-cream">
           <tr>
             {headers.map((header) => (

@@ -19,8 +19,8 @@ import { cn } from "@/lib/utils";
 
 const nav = [
   { href: "/records", label: "原始记录上传", icon: UploadCloud },
-  { href: "/rules", label: "规则配置", icon: ListChecks },
-  { href: "/reports", label: "报告生成", icon: FileText }
+  { href: "/reports", label: "报告生成", icon: FileText },
+  { href: "/rules", label: "规则配置", icon: ListChecks }
 ];
 
 const managementNav = [

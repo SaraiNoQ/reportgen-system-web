@@ -64,6 +64,39 @@ button {
   background: var(--color-lavender-mist);
 }
 
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(36, 36, 36, 0.34) rgba(246, 243, 241, 0.72);
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+  background: rgba(246, 243, 241, 0.72);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb {
+  border: 2px solid rgba(246, 243, 241, 0.72);
+  border-radius: 999px;
+  background: rgba(36, 36, 36, 0.32);
+  transition:
+    background-color 160ms ease,
+    border-width 160ms ease;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  border-width: 1px;
+  background: rgba(0, 0, 0, 0.68);
+}
+
+*:hover {
+  scrollbar-color: rgba(0, 0, 0, 0.68) rgba(246, 243, 241, 0.72);
+}
+
 .serif {
   font-family: var(--font-serif-display);
   font-weight: 400;
@@ -102,4 +135,13 @@ button {
 
 .table-scroll table {
   min-width: 820px;
+}
+
+.table-scroll.fit-table {
+  overflow-x: hidden;
+}
+
+.table-scroll.fit-table table {
+  min-width: 0;
+  table-layout: fixed;
 }
