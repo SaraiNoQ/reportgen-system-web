@@ -66,7 +66,7 @@ button {
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(36, 36, 36, 0.28) rgba(246, 243, 241, 0.44);
+  scrollbar-color: rgba(36, 36, 36, 0.28) transparent;
 }
 
 *::-webkit-scrollbar {
@@ -75,63 +75,43 @@ button {
 }
 
 *::-webkit-scrollbar-track {
-  border-radius: 999px;
-  background: rgba(246, 243, 241, 0.36);
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.02);
-  transition:
-    background-color 180ms ease,
-    box-shadow 180ms ease;
+  background: transparent;
 }
 
 *::-webkit-scrollbar-corner {
-  background: rgba(246, 243, 241, 0.42);
+  background: transparent;
 }
 
 *::-webkit-scrollbar-thumb {
-  border: 3px solid rgba(246, 243, 241, 0.42);
+  border: 3px solid transparent;
   border-radius: 999px;
-  background: rgba(36, 36, 36, 0.32);
+  background: rgba(36, 36, 36, 0.28);
   transition:
-    background-color 180ms ease,
-    border-color 180ms ease,
-    border-width 180ms ease,
-    box-shadow 180ms ease;
+    background-color 220ms ease,
+    border-color 220ms ease,
+    border-width 220ms ease;
 }
 
 *:hover,
 *:focus,
 *:focus-within {
-  scrollbar-color: rgba(0, 0, 0, 0.72) rgba(207, 218, 245, 0.42);
-}
-
-*:hover::-webkit-scrollbar,
-*:focus::-webkit-scrollbar,
-*:focus-within::-webkit-scrollbar {
-  width: 12px;
-  height: 12px;
-}
-
-*:hover::-webkit-scrollbar-track,
-*:focus::-webkit-scrollbar-track,
-*:focus-within::-webkit-scrollbar-track {
-  background: rgba(207, 218, 245, 0.34);
-  box-shadow:
-    inset 0 0 0 1px rgba(0, 0, 0, 0.08),
-    inset 0 0 0 999px rgba(246, 243, 241, 0.16);
+  scrollbar-color: rgba(0, 0, 0, 0.72) transparent;
 }
 
 *:hover::-webkit-scrollbar-thumb,
 *:focus::-webkit-scrollbar-thumb,
 *:focus-within::-webkit-scrollbar-thumb {
-  border: 2px solid rgba(207, 218, 245, 0.38);
-  border-radius: 999px;
-  background: rgba(0, 0, 0, 0.68);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12);
+  background: rgba(36, 36, 36, 0.48);
 }
 
 *::-webkit-scrollbar-thumb:hover {
+  border-width: 2px;
+  background: rgba(0, 0, 0, 0.78);
+}
+
+*::-webkit-scrollbar-thumb:active {
   border-width: 1px;
-  background: rgba(0, 0, 0, 0.86);
+  background: rgba(0, 0, 0, 0.92);
 }
 
 .serif {

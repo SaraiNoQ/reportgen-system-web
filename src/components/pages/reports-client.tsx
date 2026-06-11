@@ -16,6 +16,7 @@ import {
   Save,
   Search,
   Sparkles,
+  Undo2,
   Upload,
   X
 } from "lucide-react";
@@ -90,6 +91,7 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
   const [addSectionOpen, setAddSectionOpen] = useState(false);
   const [newSectionTitle, setNewSectionTitle] = useState("");
   const [toast, setToast] = useState("");
+  const [rollbackTarget, setRollbackTarget] = useState<VersionEntry | null>(null);
   const [versions, setVersions] = useState<VersionEntry[]>([
     { id: "draft-1", label: "V1.1 张工 保存草稿" },
     { id: "initial-1", label: "V1.0 系统 生成初稿" }
@@ -173,6 +175,14 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
     showToast("草稿已保存。");
   }
 
+  function handleRollbackConfirm() {
+    if (!rollbackTarget) return;
+    const v = `V${versions.length + 1}.0 张工 回退至 ${rollbackTarget.label}`;
+    setVersions((prev) => [{ id: `rollback-${Date.now()}`, label: v }, ...prev]);
+    showToast(`已回退至「${rollbackTarget.label}」。当前未保存的修改已丢弃。`);
+    setRollbackTarget(null);
+  }
+
   function handleExportWord(scope = "整份报告") {
     showToast(`${scope} Word 正在准备下载...`);
     setTimeout(() => showToast(`${scope} Word 已生成：${activeDocName}`), 1200);
@@ -246,14 +256,16 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
           <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
+                <div
+                  role="button"
+                  tabIndex={0}
                   onClick={() => setCategoryPickerOpen(true)}
-                  className="focus-ring serif rounded-md border border-transparent px-1 text-left text-[2rem] leading-tight transition hover:border-ink-black/25 hover:bg-white/35 md:text-[2.15rem]"
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setCategoryPickerOpen(true); } }}
+                  className="focus-ring serif cursor-pointer rounded-md border border-transparent px-1 text-left text-3xl leading-tight transition hover:border-ink-black/25 hover:bg-white/35"
                   title="点击选择当前章节类别"
                 >
                   {active?.title}
-                </button>
+                </div>
                 <button
                   type="button"
                   onClick={() => setCategoryPickerOpen(true)}
@@ -331,9 +343,19 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
           </Card>
           <Card>
             <h2 className="serif text-3xl">版本历史</h2>
-            <div className="mt-5 space-y-3 text-sm">
+            <div className="mt-5 max-h-48 space-y-3 overflow-y-auto text-sm">
               {versions.map((item) => (
-                <div key={item.id} className="rounded-lg border border-ink-black/15 px-3 py-2">{item.label}</div>
+                <div key={item.id} className="flex items-center gap-2 rounded-lg border border-ink-black/15 px-3 py-2">
+                  <span className="min-w-0 flex-1">{item.label}</span>
+                  <button
+                    type="button"
+                    onClick={() => setRollbackTarget(item)}
+                    className="focus-ring shrink-0 rounded-md p-1 text-warm-stone transition hover:bg-lavender-mist/60 hover:text-ink-black"
+                    title="回退至此版本"
+                  >
+                    <Undo2 className="size-4" />
+                  </button>
+                </div>
               ))}
             </div>
           </Card>
@@ -481,6 +503,27 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
               <Button variant="primary" onClick={handleAddSection}>
                 <Plus className="size-4" />
                 添加
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {rollbackTarget ? (
+        <div className="fixed inset-0 z-30 flex items-center justify-center bg-ink-black/35 p-4 backdrop-blur-sm" onClick={() => setRollbackTarget(null)}>
+          <div className="w-full max-w-[420px] rounded-xl border border-ink-black bg-parchment-cream p-5 shadow-editorial" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-4">
+              <p className="text-xs uppercase tracking-[0.12em] text-warm-stone">Version Rollback</p>
+              <h2 className="serif mt-0.5 text-[1.5rem] leading-tight">版本回退</h2>
+              <p className="mt-3 text-sm leading-6 text-graphite">
+                将回退至版本「<span className="font-medium text-ink-black">{rollbackTarget.label}</span>」。回退后将<span className="font-medium text-peach-wash">不会保存当前未提交的修改</span>，请谨慎使用。
+              </p>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-ink-black/15 pt-4">
+              <Button variant="ghost" onClick={() => setRollbackTarget(null)}>取消</Button>
+              <Button variant="primary" onClick={handleRollbackConfirm}>
+                <Undo2 className="size-4" />
+                确认回退
               </Button>
             </div>
           </div>
