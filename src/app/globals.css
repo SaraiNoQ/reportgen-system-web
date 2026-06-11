@@ -1,0 +1,105 @@
+@import "tailwindcss";
+
+@theme {
+  --color-parchment-cream: #f6f3f1;
+  --color-ink-black: #000000;
+  --color-charcoal: #242424;
+  --color-graphite: #4e4d4d;
+  --color-slate-shadow: #3d3d3d;
+  --color-warm-stone: #797776;
+  --color-lavender-mist: #cfdaf5;
+  --color-peach-wash: #ff9473;
+  --color-mint-wash: #a7fccd;
+  --font-serif-display: "Source Serif 4", "Lora", ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+  --font-mono-ui: "JetBrains Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --shadow-editorial: rgba(0, 0, 0, 0.1) 0 0 10px 0;
+  --radius-card: 12px;
+  --radius-pill: 8px;
+}
+
+:root {
+  --color-parchment-cream: #f6f3f1;
+  --color-ink-black: #000000;
+  --color-charcoal: #242424;
+  --color-graphite: #4e4d4d;
+  --color-slate-shadow: #3d3d3d;
+  --color-warm-stone: #797776;
+  --color-lavender-mist: #cfdaf5;
+  --shadow-editorial: rgba(0, 0, 0, 0.1) 0 0 10px 0;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--color-parchment-cream);
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    linear-gradient(rgba(0, 0, 0, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.025) 1px, transparent 1px),
+    var(--color-parchment-cream);
+  background-size: 40px 40px;
+  color: var(--color-ink-black);
+  font-family: var(--font-mono-ui);
+  letter-spacing: 0;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+::selection {
+  background: var(--color-lavender-mist);
+}
+
+.serif {
+  font-family: var(--font-serif-display);
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+.mono {
+  font-family: var(--font-mono-ui);
+}
+
+.paper-card {
+  border-radius: 12px;
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  background: rgba(246, 243, 241, 0.76);
+  box-shadow: var(--shadow-editorial);
+}
+
+.lavender-card {
+  border-radius: 12px;
+  background: var(--color-lavender-mist);
+  box-shadow: var(--shadow-editorial);
+}
+
+.hairline {
+  border-color: rgba(0, 0, 0, 0.14);
+}
+
+.focus-ring:focus-visible {
+  outline: 2px solid var(--color-ink-black);
+  outline-offset: 3px;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+.table-scroll table {
+  min-width: 820px;
+}
