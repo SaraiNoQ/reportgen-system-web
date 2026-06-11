@@ -1,22 +1,28 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   Check,
+  ChevronLeft,
+  ChevronRight,
   Download,
   Eye,
+  FileDown,
   FileText,
+  FileUp,
   Lightbulb,
   Loader2,
   Plus,
   Save,
+  Search,
   Sparkles,
+  Upload,
   X
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, SectionHeader } from "@/components/ui/card";
-import { Input, Select, Textarea } from "@/components/ui/forms";
+import { Input } from "@/components/ui/forms";
 import type { ReportSection } from "@/lib/types/domain";
 
 const AI_SUGGESTIONS = [
@@ -29,33 +35,83 @@ const AI_SUGGESTIONS = [
   {
     id: "ai2",
     title: "术语规范化",
-    text: '建议将"大概合格"改为"检测结果符合 GB/T 1958-2017 要求，判定为合格"。',
+    text: "建议将检测结论统一为标准表述：检测结果符合 GB/T 1958-2017 要求，判定为合格。",
     tone: "warning" as const
   },
   {
     id: "ai3",
     title: "补充免责声明",
-    text: "本报告仅对来样负责，检测结果不作为产品质量证明。检测环境：温度 20±2°C，湿度 50±10%RH。",
+    text: "本报告仅对来样负责，检测环境：温度 20±2°C，湿度 50±10%RH。",
     tone: "neutral" as const
   }
 ];
+
+const REPORT_CATEGORIES = [
+  { id: "cover", name: "封面", template: "检测报告封面标准模板", code: "CAT-COVER", scope: "报告首页、委托信息、样品信息" },
+  { id: "conclusion", name: "检验结论", template: "检验结论标准模板", code: "CAT-CONCLUSION", scope: "综合判定、标准引用、结论说明" },
+  { id: "geometry", name: "几何精度", template: "机床几何精度检测报告模板", code: "CAT-GEOMETRY", scope: "平面度、直线度、圆度、同轴度" },
+  { id: "position", name: "位置精度", template: "位置精度检测报告模板", code: "CAT-POSITION", scope: "定位精度、重复定位、平行度、垂直度" },
+  { id: "electric", name: "电气参数", template: "电气参数检测报告模板", code: "CAT-ELECTRIC", scope: "电压、电流、绝缘、接地" },
+  { id: "attachment", name: "附件", template: "报告附件归档模板", code: "CAT-ATTACHMENT", scope: "原始记录、照片、解析日志、签章页" },
+  { id: "custom", name: "自定义章节", template: "通用人工补充章节模板", code: "CAT-CUSTOM", scope: "人工补充说明、特殊检测项" }
+];
+
+function getDefaultCategoryId(title: string) {
+  if (title.includes("封面")) return "cover";
+  if (title.includes("结论")) return "conclusion";
+  if (title.includes("几何")) return "geometry";
+  if (title.includes("位置")) return "position";
+  if (title.includes("电气")) return "electric";
+  if (title.includes("附件")) return "attachment";
+  return "custom";
+}
+
+function categoryById(id: string) {
+  return REPORT_CATEGORIES.find((category) => category.id === id) ?? REPORT_CATEGORIES[REPORT_CATEGORIES.length - 1];
+}
+
+type VersionEntry = {
+  id: string;
+  label: string;
+};
 
 export function ReportsClient({ sections: initialSections }: { sections: ReportSection[] }) {
   const [sections, setSections] = useState(initialSections);
   const [activeId, setActiveId] = useState(sections[0]?.id ?? "");
   const [content, setContent] = useState(Object.fromEntries(sections.map((s) => [s.id, s.content])));
-  const [message, setMessage] = useState("存在 2 处建议优化内容，处理后可提交审核。");
+  const [message, setMessage] = useState("当前项目已匹配默认模板，可直接生成 Word，并在此处查看 PDF 预览。");
   const [optimizeCount, setOptimizeCount] = useState(2);
   const [generating, setGenerating] = useState(false);
-  const [previewOpen, setPreviewOpen] = useState(false);
+  const [pdfPreviewOpen, setPdfPreviewOpen] = useState(false);
+  const [generatedDialogOpen, setGeneratedDialogOpen] = useState(false);
+  const [previewScope, setPreviewScope] = useState<"report" | "section">("section");
+  const [categoryPickerOpen, setCategoryPickerOpen] = useState(false);
+  const [categorySearch, setCategorySearch] = useState("");
   const [addSectionOpen, setAddSectionOpen] = useState(false);
   const [newSectionTitle, setNewSectionTitle] = useState("");
   const [toast, setToast] = useState("");
-  const [versions, setVersions] = useState(["V1.1 张工 保存草稿", "V1.0 系统 生成初稿"]);
+  const [versions, setVersions] = useState<VersionEntry[]>([
+    { id: "draft-1", label: "V1.1 张工 保存草稿" },
+    { id: "initial-1", label: "V1.0 系统 生成初稿" }
+  ]);
   const [aiIndex, setAiIndex] = useState(0);
-  const [formatBold, setFormatBold] = useState(false);
-
+  const [sectionCategories, setSectionCategories] = useState<Record<string, string>>(
+    Object.fromEntries(initialSections.map((section) => [section.id, getDefaultCategoryId(section.title)]))
+  );
+  const [zoom, setZoom] = useState(92);
+  const [page, setPage] = useState(1);
+  const [uploadedRevisions, setUploadedRevisions] = useState<Record<string, string>>({});
+  const revisionInputRef = useRef<HTMLInputElement>(null);
+  const generationLockRef = useRef(false);
   const active = sections.find((s) => s.id === activeId) ?? sections[0];
+  const activeCategory = categoryById(active ? sectionCategories[active.id] ?? getDefaultCategoryId(active.title) : "custom");
+  const reportContent = sections.map((section) => `${section.title}\n${content[section.id] || section.content}`).join("\n\n");
+  const filteredCategories = REPORT_CATEGORIES.filter((category) => {
+    const keyword = categorySearch.trim().toLowerCase();
+    if (!keyword) return true;
+    return `${category.name} ${category.template} ${category.code} ${category.scope}`.toLowerCase().includes(keyword);
+  });
+  const activeDocName = `${active?.title ?? "检测报告"}_${activeCategory.name}.docx`;
 
   function showToast(msg: string) {
     setToast(msg);
@@ -63,8 +119,10 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
   }
 
   function handleGenerate() {
+    if (generationLockRef.current) return;
+    generationLockRef.current = true;
     setGenerating(true);
-    setMessage("正在根据项目解析数据和规则模板生成报告初稿...");
+    setMessage("正在根据各章节类别、标准模板和解析字段生成 Word，并同步转换 PDF 预览...");
     setTimeout(() => {
       const newSections: ReportSection[] = [
         { id: "s1", title: "封面", status: "已校验" as const, content: "委托单位：某智能制造有限公司\n样品名称：智能制造产线\n型号规格：IML-2405\n检测日期：2024-05-20\n报告日期：2024-05-21" },
@@ -75,12 +133,15 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
       ];
       setSections(newSections);
       setContent(Object.fromEntries(newSections.map((s) => [s.id, s.content])));
+      setSectionCategories(Object.fromEntries(newSections.map((section) => [section.id, getDefaultCategoryId(section.title)])));
       setActiveId(newSections[0].id);
-      setVersions((prev) => ["V1.0 系统 生成初稿", ...prev]);
+      setVersions((prev) => [{ id: `generated-${Date.now()}`, label: "V1.2 系统 重新生成 Word/PDF" }, ...prev]);
       setGenerating(false);
-      setMessage("报告初稿已生成，请逐章节编辑确认后提交审核。");
-      showToast("报告初稿生成完成，共 5 个章节。");
-    }, 2000);
+      generationLockRef.current = false;
+      setMessage("报告已生成。请通过 PDF 预览核对排版；如发现内容错误，可下载对应章节 Word 修改后重新上传。");
+      setGeneratedDialogOpen(true);
+      showToast("报告生成完成：已生成 Word 和 PDF 预览。");
+    }, 1600);
   }
 
   function applySuggestion(text: string) {
@@ -90,8 +151,8 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
       [active.id]: `${current[active.id]}\n${text}`
     }));
     setOptimizeCount((c) => Math.max(0, c - 1));
-    setMessage("已将智能建议应用到当前章节。");
-    if (optimizeCount <= 1) setMessage("所有建议已处理，可提交审核。");
+    setMessage("已记录智能建议。重新生成后会体现在 Word 与 PDF 预览中。");
+    if (optimizeCount <= 1) setMessage("所有建议已处理，可重新生成报告并核对 PDF。");
   }
 
   function handleAddSection() {
@@ -99,6 +160,7 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
     const id = `s${sections.length + 1}`;
     setSections((prev) => [...prev, { id, title: newSectionTitle.trim(), content: "", status: "待完善" as const }]);
     setContent((prev) => ({ ...prev, [id]: "" }));
+    setSectionCategories((prev) => ({ ...prev, [id]: getDefaultCategoryId(newSectionTitle.trim()) }));
     setActiveId(id);
     setNewSectionTitle("");
     setAddSectionOpen(false);
@@ -107,53 +169,60 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
 
   function handleSaveDraft() {
     const v = `V${(versions.length + 1) / 10 + 1}.${versions.length % 10} 张工 保存草稿`;
-    setVersions((prev) => [v, ...prev]);
+    setVersions((prev) => [{ id: `draft-${Date.now()}`, label: v }, ...prev]);
     showToast("草稿已保存。");
   }
 
-  function handleExportWord() {
-    showToast("检测报告正在导出为 .docx 文件...");
-    setTimeout(() => showToast("导出完成：智能制造产线项目_检测报告.docx"), 1500);
+  function handleExportWord(scope = "整份报告") {
+    showToast(`${scope} Word 正在准备下载...`);
+    setTimeout(() => showToast(`${scope} Word 已生成：${activeDocName}`), 1200);
+  }
+
+  function handleExportPdf() {
+    showToast("PDF 正在导出...");
+    setTimeout(() => showToast("导出完成：智能制造产线项目_检测报告.pdf"), 1200);
+  }
+
+  function selectSectionCategory(categoryId: string) {
+    if (!active) return;
+    const nextCategory = categoryById(categoryId);
+    setSectionCategories((current) => ({ ...current, [active.id]: categoryId }));
+    setCategoryPickerOpen(false);
+    setCategorySearch("");
+    showToast(`已将「${active.title}」关联到「${nextCategory.name}」类别。`);
+  }
+
+  function handleRevisionUpload(fileList: FileList | null) {
+    const file = fileList?.[0];
+    if (!file || !active) return;
+    setUploadedRevisions((current) => ({ ...current, [active.id]: file.name }));
+    setVersions((prev) => [{ id: `revision-${Date.now()}`, label: `V${prev.length + 1}.0 张工 上传更正版 Word` }, ...prev]);
+    showToast(`已上传 ${file.name}，系统将重新转换 PDF 预览。`);
+  }
+
+  function openPdfPreview(scope: "report" | "section") {
+    setPreviewScope(scope);
+    setPage(1);
+    setPdfPreviewOpen(true);
   }
 
   return (
     <>
       <SectionHeader
         eyebrow="Report Generation"
-        title="报告生成与编辑"
+        title="报告生成与预览"
         action={
           <div className="flex flex-wrap gap-3">
-            <Button onClick={() => setPreviewOpen(true)}><Eye className="size-4" />预览</Button>
-            <Button onClick={handleExportWord}><Download className="size-4" />导出 Word</Button>
             <Button variant="primary" onClick={handleGenerate} disabled={generating}>
-              <Sparkles className="size-4" />
+              {generating ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
               {generating ? "生成中..." : "生成报告"}
             </Button>
           </div>
         }
       />
-      <Card className="mb-4">
-        <div className="grid gap-4 md:grid-cols-[1fr_1fr_auto]">
-          <label>
-            <span className="mb-2 block text-sm text-graphite">报告模板</span>
-            <Select className="w-full"><option>机床几何精度检测报告模板</option><option>综合性能检测报告模板</option></Select>
-          </label>
-          <label>
-            <span className="mb-2 block text-sm text-graphite">检测项</span>
-            <Select className="w-full" defaultValue="几何精度、位置精度、电气参数">
-              <option>几何精度、位置精度、电气参数</option>
-              <option>仅几何精度</option>
-              <option>仅电气参数</option>
-            </Select>
-          </label>
-          <Button className="self-end" variant="primary" onClick={handleGenerate} disabled={generating}>
-            {generating ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
-            {generating ? "生成中..." : "生成报告"}
-          </Button>
-        </div>
-      </Card>
-      <div className="grid gap-4 xl:grid-cols-[220px_1fr_300px]">
-        <Card className="p-4">
+
+      <div className="grid gap-4 xl:grid-cols-[220px_minmax(0,1fr)_300px]">
+        <Card className="sticky top-24 max-h-[calc(100vh-7rem)] self-start overflow-y-auto p-4">
           <h2 className="serif mb-4 text-3xl">报告目录</h2>
           <div className="space-y-2">
             {sections.map((section) => (
@@ -164,6 +233,7 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
               >
                 <span className="block">{section.title}</span>
                 <span className="mt-1 block text-xs opacity-70">{section.status}</span>
+                {uploadedRevisions[section.id] ? <span className="mt-1 block truncate text-xs opacity-70">已上传更正版</span> : null}
               </button>
             ))}
           </div>
@@ -171,37 +241,63 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
             <Plus className="size-4" />添加章节
           </Button>
         </Card>
-        <Card>
-          <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-            <h2 className="serif text-3xl">{active?.title}</h2>
-            <div className="flex gap-2">
-              {["B", "I", "U"].map((tool) => (
+
+        <Card className="min-w-0">
+          <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
-                  key={tool}
                   type="button"
-                  onClick={() => {
-                    if (tool === "B") setFormatBold(!formatBold);
-                    showToast(`格式「${tool}」已应用。`);
-                  }}
-                  className={`rounded-md border px-3 py-1.5 text-xs transition ${formatBold && tool === "B" ? "border-ink-black bg-ink-black text-parchment-cream" : "border-ink-black/20 hover:border-ink-black/50"}`}
+                  onClick={() => setCategoryPickerOpen(true)}
+                  className="focus-ring serif rounded-md border border-transparent px-1 text-left text-[2rem] leading-tight transition hover:border-ink-black/25 hover:bg-white/35 md:text-[2.15rem]"
+                  title="点击选择当前章节类别"
                 >
-                  {tool}
+                  {active?.title}
                 </button>
-              ))}
+                <button
+                  type="button"
+                  onClick={() => setCategoryPickerOpen(true)}
+                  className="focus-ring inline-flex max-w-full items-center gap-2 rounded-md border border-ink-black/30 bg-lavender-mist/70 px-2.5 py-1 text-xs text-graphite transition hover:border-ink-black hover:bg-lavender-mist"
+                >
+                  章节类别
+                  <span className="truncate text-ink-black">{activeCategory.name}</span>
+                  <span className="hidden text-warm-stone lg:inline">/ {activeCategory.template}</span>
+                </button>
+              </div>
+              <p className="mt-1.5 text-sm leading-6 text-warm-stone">
+                每个目录章节独立绑定系统类别和标准模板；点击章节标题可在人工纠错时重新选择类别。
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button onClick={() => handleExportWord(active?.title ?? "当前章节")}><Download className="size-4" />下载章节 Word</Button>
+              <Button onClick={() => revisionInputRef.current?.click()}><Upload className="size-4" />上传更正版</Button>
+              <Button onClick={handleSaveDraft}><Save className="size-4" />保存记录</Button>
+              <Button onClick={() => openPdfPreview("section")}><Eye className="size-4" />全屏预览</Button>
             </div>
           </div>
-          {active ? (
-            <Textarea
-              className="min-h-[300px] w-full rounded-lg text-base leading-7"
-              value={content[active.id] ?? ""}
-              onChange={(event) => setContent((current) => ({ ...current, [active.id]: event.target.value }))}
-            />
-          ) : null}
-          <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
-            <p className="text-sm text-warm-stone">停止输入 5 秒后自动保存。当前为 mock 状态。</p>
-            <Button onClick={handleSaveDraft}><Save className="size-4" />保存草稿</Button>
-          </div>
+          <input
+            ref={revisionInputRef}
+            className="hidden"
+            type="file"
+            accept=".doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            onChange={(event) => {
+              handleRevisionUpload(event.target.files);
+              event.currentTarget.value = "";
+            }}
+          />
+          <PdfPreviewSurface
+            activeTitle={active?.title ?? "报告"}
+            content={content[active?.id ?? ""] ?? active?.content ?? ""}
+            page={page}
+            zoom={zoom}
+            onPageChange={setPage}
+            onZoomChange={setZoom}
+            categoryName={activeCategory.name}
+            categoryTemplate={activeCategory.template}
+            revisionName={active ? uploadedRevisions[active.id] : undefined}
+          />
         </Card>
+
         <aside className="space-y-4">
           <Card lavender>
             <div className="mb-5 flex items-center gap-3">
@@ -217,7 +313,7 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
               <div className="mt-5 flex gap-2">
                 <Button className="flex-1" variant="primary" onClick={() => applySuggestion(AI_SUGGESTIONS[aiIndex].text)}>
                   <Check className="size-4" />
-                  应用到正文
+                  纳入生成规则
                 </Button>
                 <Button variant="ghost" onClick={() => setAiIndex((i) => (i + 1) % AI_SUGGESTIONS.length)} title="下一条建议">
                   跳过
@@ -226,10 +322,18 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
             </div>
           </Card>
           <Card>
+            <h2 className="serif text-3xl">交付文件</h2>
+            <div className="mt-4 space-y-3 text-sm">
+              <DeliveryRow icon={<FileText className="size-4" />} label="整份 Word" value="已生成" onClick={() => handleExportWord()} />
+              <DeliveryRow icon={<FileDown className="size-4" />} label="整份 PDF" value="可预览" onClick={handleExportPdf} />
+              <DeliveryRow icon={<FileUp className="size-4" />} label="章节更正版" value={active && uploadedRevisions[active.id] ? "已上传" : "未上传"} onClick={() => revisionInputRef.current?.click()} />
+            </div>
+          </Card>
+          <Card>
             <h2 className="serif text-3xl">版本历史</h2>
             <div className="mt-5 space-y-3 text-sm">
               {versions.map((item) => (
-                <div key={item} className="rounded-lg border border-ink-black/15 px-3 py-2">{item}</div>
+                <div key={item.id} className="rounded-lg border border-ink-black/15 px-3 py-2">{item.label}</div>
               ))}
             </div>
           </Card>
@@ -240,38 +344,133 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
         </aside>
       </div>
 
-      {/* Preview Modal */}
-      {previewOpen ? (
-        <div className="fixed inset-0 z-30 flex items-center justify-center bg-ink-black/35 p-4 backdrop-blur-sm" onClick={() => setPreviewOpen(false)}>
-          <div className="flex h-full w-full max-w-[720px] flex-col rounded-xl border border-ink-black bg-parchment-cream shadow-editorial" onClick={(e) => e.stopPropagation()}>
+      {pdfPreviewOpen ? (
+        <div className="fixed inset-0 z-30 flex items-center justify-center bg-ink-black/35 p-4 backdrop-blur-sm" onClick={() => setPdfPreviewOpen(false)}>
+          <div className="flex h-full w-full max-w-[940px] flex-col rounded-xl border border-ink-black bg-parchment-cream shadow-editorial" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between gap-3 border-b border-ink-black/15 px-5 py-3">
               <div>
-                <p className="text-xs uppercase tracking-[0.12em] text-warm-stone">Preview</p>
-                <h2 className="serif text-[1.4rem] leading-tight">报告预览 — 智能制造产线项目</h2>
+                <p className="text-xs uppercase tracking-[0.12em] text-warm-stone">PDF Preview</p>
+                <h2 className="serif text-[1.4rem] leading-tight">
+                  {previewScope === "report" ? "智能制造产线项目检测报告.pdf" : `${active?.title ?? "当前章节"}预览.pdf`}
+                </h2>
               </div>
-              <button type="button" aria-label="关闭预览" onClick={() => setPreviewOpen(false)}>
+              <button type="button" aria-label="关闭预览" onClick={() => setPdfPreviewOpen(false)}>
                 <X className="size-5" />
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto p-6">
-              {sections.map((section) => (
-                <div key={section.id} className="mb-6">
-                  <h3 className="serif mb-3 text-2xl border-b border-ink-black/15 pb-2">{section.title}</h3>
-                  <div className="whitespace-pre-wrap text-sm leading-7 text-graphite">{content[section.id] || section.content}</div>
-                </div>
-              ))}
+            <div className="flex-1 overflow-y-auto p-4">
+              <PdfPreviewSurface
+                activeTitle={previewScope === "report" ? "整份报告" : active?.title ?? "报告"}
+                content={previewScope === "report" ? reportContent : content[active?.id ?? ""] ?? active?.content ?? ""}
+                page={page}
+                zoom={zoom}
+                onPageChange={setPage}
+                onZoomChange={setZoom}
+                categoryName={previewScope === "report" ? "整份报告" : activeCategory.name}
+                categoryTemplate={previewScope === "report" ? "项目默认报告模板" : activeCategory.template}
+                revisionName={previewScope === "section" && active ? uploadedRevisions[active.id] : undefined}
+                full
+              />
             </div>
           </div>
         </div>
       ) : null}
 
-      {/* Add Section Modal */}
+      {generatedDialogOpen ? (
+        <div className="fixed inset-0 z-30 flex items-center justify-center bg-ink-black/35 p-4 backdrop-blur-sm" onClick={() => setGeneratedDialogOpen(false)}>
+          <div className="w-full max-w-[560px] rounded-xl border border-ink-black bg-parchment-cream p-5 shadow-editorial" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs uppercase tracking-[0.12em] text-warm-stone">Report Ready</p>
+                <h2 className="serif mt-1 text-[1.8rem] leading-tight">报告已生成</h2>
+                <p className="mt-2 text-sm leading-6 text-graphite">
+                  系统已生成 Word 初稿并同步转换 PDF 预览。请先预览整份报告排版，确认无误后导出 Word 与 PDF；章节级错误可回到目录中下载对应章节 Word 修改后上传。
+                </p>
+              </div>
+              <button type="button" aria-label="关闭生成结果" onClick={() => setGeneratedDialogOpen(false)}>
+                <X className="size-5" />
+              </button>
+            </div>
+            <div className="mt-5 grid gap-2 sm:grid-cols-3">
+              <Button
+                className="w-full"
+                onClick={() => {
+                  setGeneratedDialogOpen(false);
+                  openPdfPreview("report");
+                }}
+              >
+                <Eye className="size-4" />全屏预览
+              </Button>
+              <Button className="w-full" onClick={handleExportPdf}><FileDown className="size-4" />导出 PDF</Button>
+              <Button className="w-full" variant="primary" onClick={() => handleExportWord()}><Download className="size-4" />导出 Word</Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {categoryPickerOpen ? (
+        <div className="fixed inset-0 z-30 flex items-center justify-center bg-ink-black/35 p-4 backdrop-blur-sm" onClick={() => setCategoryPickerOpen(false)}>
+          <div className="w-full max-w-[620px] rounded-xl border border-ink-black bg-parchment-cream p-5 shadow-editorial" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <p className="text-xs uppercase tracking-[0.12em] text-warm-stone">Section Category</p>
+                <h2 className="serif mt-0.5 text-[1.6rem] leading-tight">选择章节类别</h2>
+                <p className="mt-1.5 text-sm leading-6 text-graphite">当前章节：{active?.title}。类别决定本章节使用的标准模板和字段规则。</p>
+              </div>
+              <button type="button" aria-label="关闭章节类别选择" onClick={() => setCategoryPickerOpen(false)}>
+                <X className="size-5" />
+              </button>
+            </div>
+            <label className="mb-3 flex items-center gap-2 rounded-lg border border-ink-black/20 bg-white/35 px-3 py-2">
+              <Search className="size-4 text-warm-stone" />
+              <input
+                className="w-full bg-transparent text-sm outline-none placeholder:text-warm-stone"
+                value={categorySearch}
+                onChange={(event) => setCategorySearch(event.target.value)}
+                placeholder="搜索类别、模板、编码或适用范围"
+                autoFocus
+              />
+            </label>
+            <div className="max-h-[46vh] space-y-2 overflow-y-auto pr-1">
+              {filteredCategories.map((category) => {
+                const checked = activeCategory.id === category.id;
+                return (
+                  <button
+                    key={category.id}
+                    type="button"
+                    onClick={() => selectSectionCategory(category.id)}
+                    className={`focus-ring flex w-full items-center justify-between gap-4 rounded-lg border px-4 py-3 text-left transition ${checked ? "border-ink-black bg-ink-black text-parchment-cream" : "border-ink-black/15 hover:border-ink-black/45"}`}
+                  >
+                    <span>
+                      <span className="block text-sm font-medium">{category.name}</span>
+                      <span className="mt-1 block text-xs opacity-70">{category.template}</span>
+                      <span className="mt-1 block text-xs opacity-70">{category.scope}</span>
+                    </span>
+                    <span className="flex items-center gap-3 text-xs">
+                      <span>{category.code}</span>
+                      <span className={`grid size-5 place-items-center rounded-full border ${checked ? "border-parchment-cream" : "border-ink-black/25"}`}>
+                        {checked ? <Check className="size-3.5" /> : null}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
+              {filteredCategories.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-ink-black/25 px-4 py-8 text-center text-sm text-warm-stone">
+                  没有匹配的类别，请调整关键词。
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {addSectionOpen ? (
         <div className="fixed inset-0 z-30 flex items-center justify-center bg-ink-black/35 p-4 backdrop-blur-sm" onClick={() => setAddSectionOpen(false)}>
           <div className="w-full max-w-[380px] rounded-xl border border-ink-black bg-parchment-cream p-5 shadow-editorial" onClick={(e) => e.stopPropagation()}>
             <div className="mb-4">
               <p className="text-xs uppercase tracking-[0.12em] text-warm-stone">Add Section</p>
-              <h2 className="serif text-[1.5rem] leading-tight mt-0.5">添加章节</h2>
+              <h2 className="serif mt-0.5 text-[1.5rem] leading-tight">添加章节</h2>
             </div>
             <label className="block">
               <span className="mb-1.5 block text-sm text-graphite">章节标题</span>
@@ -288,12 +487,134 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
         </div>
       ) : null}
 
-      {/* Toast */}
       {toast ? (
         <div className="fixed bottom-6 left-1/2 z-40 -translate-x-1/2 rounded-lg border border-ink-black bg-ink-black px-4 py-2.5 text-sm text-parchment-cream shadow-editorial">
           {toast}
         </div>
       ) : null}
     </>
+  );
+}
+
+function PdfPreviewSurface({
+  activeTitle,
+  content,
+  page,
+  zoom,
+  onPageChange,
+  onZoomChange,
+  categoryName,
+  categoryTemplate,
+  revisionName,
+  full = false
+}: {
+  activeTitle: string;
+  content: string;
+  page: number;
+  zoom: number;
+  onPageChange: (page: number) => void;
+  onZoomChange: (zoom: number) => void;
+  categoryName: string;
+  categoryTemplate: string;
+  revisionName?: string;
+  full?: boolean;
+}) {
+  const safePage = Math.min(Math.max(page, 1), 3);
+  const scale = zoom / 100;
+  const pageWidth = full ? 680 : 720;
+  const pageHeight = 760;
+  const scaledWidth = pageWidth * scale;
+  const scaledHeight = pageHeight * scale;
+  return (
+    <div className="rounded-lg border border-ink-black/15 bg-white/45">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-ink-black/15 px-3 py-2">
+        <div className="flex min-w-0 items-center gap-2 text-xs text-graphite">
+          <FileText className="size-4 shrink-0" />
+          <span className="truncate">PDF 预览：智能制造产线项目检测报告.pdf</span>
+          {revisionName ? <Badge tone="success">已载入更正版</Badge> : null}
+        </div>
+        <div className="flex items-center gap-1.5">
+          <button type="button" className="rounded-md border border-ink-black/20 p-1.5 hover:border-ink-black" onClick={() => onPageChange(Math.max(1, safePage - 1))} aria-label="上一页">
+            <ChevronLeft className="size-4" />
+          </button>
+          <span className="min-w-12 text-center text-xs text-graphite">{safePage}/3</span>
+          <button type="button" className="rounded-md border border-ink-black/20 p-1.5 hover:border-ink-black" onClick={() => onPageChange(Math.min(3, safePage + 1))} aria-label="下一页">
+            <ChevronRight className="size-4" />
+          </button>
+          <button type="button" className="rounded-md border border-ink-black/20 px-2 py-1 text-xs hover:border-ink-black" onClick={() => onZoomChange(Math.max(72, zoom - 8))}>-</button>
+          <span className="min-w-11 text-center text-xs text-graphite">{zoom}%</span>
+          <button type="button" className="rounded-md border border-ink-black/20 px-2 py-1 text-xs hover:border-ink-black" onClick={() => onZoomChange(Math.min(120, zoom + 8))}>+</button>
+        </div>
+      </div>
+      <div className={`${full ? "max-h-none" : "max-h-[66vh] min-h-[560px]"} overflow-auto p-4`}>
+        <div
+          className="relative mx-auto"
+          style={{ width: scaledWidth, height: scaledHeight }}
+        >
+          <div
+            className="absolute left-0 top-0 min-h-[760px] origin-top-left rounded-sm border border-ink-black/10 bg-[#fffdf8] p-10 shadow-editorial transition-transform"
+            style={{ width: pageWidth, height: pageHeight, transform: `scale(${scale})` }}
+          >
+            <div className="border-b border-ink-black pb-4 text-center">
+              <p className="text-xs uppercase tracking-[0.2em] text-warm-stone">Inspection Report</p>
+              <h3 className="serif mt-3 text-4xl">智能制造产线检测报告</h3>
+              <p className="mt-2 text-sm text-graphite">报告编号：RG-IML-2405-2024</p>
+            </div>
+            <div className="mt-8 grid grid-cols-[120px_1fr] gap-x-6 gap-y-3 text-sm leading-6">
+              <span className="text-warm-stone">当前章节</span>
+              <span className="font-medium">{activeTitle}</span>
+              <span className="text-warm-stone">章节类别</span>
+              <span>{categoryName}</span>
+              <span className="text-warm-stone">标准模板</span>
+              <span>{categoryTemplate}</span>
+              <span className="text-warm-stone">文件版本</span>
+              <span>{revisionName ? `人工更正版：${revisionName}` : "系统生成初稿"}</span>
+              <span className="text-warm-stone">页码</span>
+              <span>第 {safePage} 页 / 共 3 页</span>
+            </div>
+            <div className="mt-8 border-t border-ink-black/20 pt-6">
+              <h4 className="serif text-2xl">{safePage === 1 ? "封面与基础信息" : safePage === 2 ? activeTitle : "附件与签章"}</h4>
+              <div className="mt-4 whitespace-pre-wrap text-sm leading-7 text-graphite">
+                {safePage === 1
+                  ? "委托单位：某智能制造有限公司\n样品名称：智能制造产线\n型号规格：IML-2405\n检测日期：2024-05-20\n报告日期：2024-05-21"
+                  : safePage === 2
+                    ? content || "当前章节暂无正文内容。"
+                    : "原始记录、设备照片、解析日志与规则版本记录将作为附件随报告归档。\n\n编制：张工\n复核：待确认\n签发：待确认"}
+              </div>
+            </div>
+            <div className="mt-10 flex justify-between border-t border-ink-black/20 pt-4 text-xs text-warm-stone">
+              <span>智能检测报告生成系统</span>
+              <span>{safePage}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DeliveryRow({
+  icon,
+  label,
+  value,
+  onClick
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="focus-ring flex w-full items-center justify-between gap-3 rounded-lg border border-ink-black/15 px-3 py-2 text-left transition hover:border-ink-black/45"
+    >
+      <span className="flex items-center gap-2">
+        {icon}
+        <span>{label}</span>
+      </span>
+      <span className="text-xs text-warm-stone">{value}</span>
+    </button>
   );
 }
