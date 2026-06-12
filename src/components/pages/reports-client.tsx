@@ -10,12 +10,14 @@ import {
   FileDown,
   FileText,
   FileUp,
+  GripVertical,
   Lightbulb,
   Loader2,
   Plus,
   Save,
   Search,
   Sparkles,
+  Trash2,
   Undo2,
   Upload,
   X
@@ -25,6 +27,7 @@ import { Button } from "@/components/ui/button";
 import { Card, SectionHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/forms";
 import type { ReportSection } from "@/lib/types/domain";
+import { cn } from "@/lib/utils";
 
 const AI_SUGGESTIONS = [
   {
@@ -76,6 +79,49 @@ type VersionEntry = {
   label: string;
 };
 
+type DropMarker = {
+  targetId: string;
+  position: "before" | "after";
+};
+
+function getSectionDropMarker(container: HTMLElement | null, clientY: number, draggingId?: string | null): DropMarker | null {
+  const sectionItems = Array.from(container?.querySelectorAll<HTMLElement>("[data-section-item-id]") ?? []);
+  const availableItems = sectionItems.filter((sectionItem) => sectionItem.dataset.sectionItemId !== draggingId);
+  if (availableItems.length === 0) return null;
+
+  for (const sectionItem of availableItems) {
+    const bounds = sectionItem.getBoundingClientRect();
+    const sectionId = sectionItem.dataset.sectionItemId;
+    if (!sectionId) continue;
+    if (clientY < bounds.top + bounds.height / 2) {
+      return { targetId: sectionId, position: "before" };
+    }
+  }
+
+  const lastItem = availableItems[availableItems.length - 1];
+  const lastItemId = lastItem?.dataset.sectionItemId;
+  return lastItemId ? { targetId: lastItemId, position: "after" } : null;
+}
+
+function setFloatingDragImage(dataTransfer: DataTransfer, source: HTMLElement, clientX: number, clientY: number) {
+  const bounds = source.getBoundingClientRect();
+  const preview = source.cloneNode(true) as HTMLElement;
+  preview.setAttribute("aria-hidden", "true");
+  preview.style.position = "fixed";
+  preview.style.top = "-1000px";
+  preview.style.left = "-1000px";
+  preview.style.width = `${bounds.width}px`;
+  preview.style.pointerEvents = "none";
+  preview.style.opacity = "0.96";
+  preview.style.transform = "rotate(-0.6deg) scale(1.02)";
+  preview.style.boxShadow = "0 18px 40px rgba(18, 16, 14, 0.24)";
+  preview.style.background = "rgb(250, 246, 239)";
+  preview.style.zIndex = "9999";
+  document.body.appendChild(preview);
+  dataTransfer.setDragImage(preview, clientX - bounds.left, clientY - bounds.top);
+  window.setTimeout(() => preview.remove(), 0);
+}
+
 export function ReportsClient({ sections: initialSections }: { sections: ReportSection[] }) {
   const [sections, setSections] = useState(initialSections);
   const [activeId, setActiveId] = useState(sections[0]?.id ?? "");
@@ -103,6 +149,9 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
   const [zoom, setZoom] = useState(92);
   const [page, setPage] = useState(1);
   const [uploadedRevisions, setUploadedRevisions] = useState<Record<string, string>>({});
+  const [draggingSectionId, setDraggingSectionId] = useState<string | null>(null);
+  const [sectionDropMarker, setSectionDropMarker] = useState<DropMarker | null>(null);
+  const sectionListRef = useRef<HTMLDivElement | null>(null);
   const revisionInputRef = useRef<HTMLInputElement>(null);
   const generationLockRef = useRef(false);
   const active = sections.find((s) => s.id === activeId) ?? sections[0];
@@ -169,6 +218,50 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
     showToast(`已添加章节「${newSectionTitle.trim()}」。`);
   }
 
+  function deleteSection(sectionId: string) {
+    if (sections.length <= 1) {
+      showToast("至少需要保留一个报告章节。");
+      return;
+    }
+    const removed = sections.find((section) => section.id === sectionId);
+    const removedIndex = sections.findIndex((section) => section.id === sectionId);
+    const nextSections = sections.filter((section) => section.id !== sectionId);
+    setSections(nextSections);
+    setContent((current) => {
+      const next = { ...current };
+      delete next[sectionId];
+      return next;
+    });
+    setSectionCategories((current) => {
+      const next = { ...current };
+      delete next[sectionId];
+      return next;
+    });
+    setUploadedRevisions((current) => {
+      const next = { ...current };
+      delete next[sectionId];
+      return next;
+    });
+    if (activeId === sectionId) {
+      setActiveId(nextSections[Math.min(removedIndex, nextSections.length - 1)]?.id ?? "");
+    }
+    showToast(`已删除章节「${removed?.title ?? "未命名章节"}」。`);
+  }
+
+  function moveSection(sourceId: string, targetId: string, position: "before" | "after" = "before") {
+    if (sourceId === targetId) return;
+    setSections((current) => {
+      const sourceIndex = current.findIndex((section) => section.id === sourceId);
+      const targetIndex = current.findIndex((section) => section.id === targetId);
+      if (sourceIndex === -1 || targetIndex === -1) return current;
+      const next = [...current];
+      const [moved] = next.splice(sourceIndex, 1);
+      const targetAfterRemoval = next.findIndex((section) => section.id === targetId);
+      next.splice(position === "after" ? targetAfterRemoval + 1 : targetAfterRemoval, 0, moved);
+      return next;
+    });
+  }
+
   function handleSaveDraft() {
     const v = `V${(versions.length + 1) / 10 + 1}.${versions.length % 10} 张工 保存草稿`;
     setVersions((prev) => [{ id: `draft-${Date.now()}`, label: v }, ...prev]);
@@ -233,23 +326,115 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
 
       <div className="grid gap-4 xl:grid-cols-[220px_minmax(0,1fr)_300px]">
         <Card className="sticky top-24 max-h-[calc(100vh-7rem)] self-start overflow-y-auto p-4">
-          <h2 className="serif mb-4 text-3xl">报告目录</h2>
-          <div className="space-y-2">
-            {sections.map((section) => (
-              <button
-                key={section.id}
-                onClick={() => setActiveId(section.id)}
-                className={`w-full rounded-lg border px-3 py-2 text-left text-sm ${activeId === section.id ? "border-ink-black bg-ink-black text-parchment-cream" : "border-ink-black/15"}`}
-              >
-                <span className="block">{section.title}</span>
-                <span className="mt-1 block text-xs opacity-70">{section.status}</span>
-                {uploadedRevisions[section.id] ? <span className="mt-1 block truncate text-xs opacity-70">已上传更正版</span> : null}
-              </button>
-            ))}
+          <div
+            onDragOver={(event) => {
+              if (!draggingSectionId) return;
+              event.preventDefault();
+              event.dataTransfer.dropEffect = "move";
+              setSectionDropMarker(getSectionDropMarker(sectionListRef.current, event.clientY, draggingSectionId));
+            }}
+            onDrop={(event) => {
+              if (!draggingSectionId) return;
+              event.preventDefault();
+              const sourceId = event.dataTransfer.getData("text/plain") || draggingSectionId;
+              const marker = sectionDropMarker ?? getSectionDropMarker(sectionListRef.current, event.clientY, sourceId);
+              if (sourceId && marker) {
+                moveSection(sourceId, marker.targetId, marker.position);
+              }
+              setDraggingSectionId(null);
+              setSectionDropMarker(null);
+            }}
+          >
+            <h2 className="serif mb-4 text-3xl">报告目录</h2>
+            <div ref={sectionListRef} className="space-y-2">
+              {sections.map((section) => {
+                const showBefore = sectionDropMarker?.targetId === section.id && sectionDropMarker.position === "before";
+                const showAfter = sectionDropMarker?.targetId === section.id && sectionDropMarker.position === "after";
+                const isDragging = draggingSectionId === section.id;
+                const isActive = activeId === section.id;
+                return (
+                  <div
+                    key={section.id}
+                    className={cn(
+                      "space-y-2 transition-all duration-200",
+                      isDragging && "h-0 overflow-hidden opacity-0"
+                    )}
+                  >
+                    {showBefore ? (
+                      <div className="h-2 rounded-full border border-dashed border-ink-black/40 bg-mint-wash/55 transition-all" />
+                    ) : null}
+                    <div
+                      draggable
+                      data-section-item-id={section.id}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setActiveId(section.id)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          setActiveId(section.id);
+                        }
+                      }}
+                      onDragStart={(event) => {
+                        const target = event.target;
+                        if (!(target instanceof Element) || target.closest("button,a,input,textarea")) {
+                          event.preventDefault();
+                          return;
+                        }
+                        event.dataTransfer.effectAllowed = "move";
+                        event.dataTransfer.setData("text/plain", section.id);
+                        setFloatingDragImage(event.dataTransfer, event.currentTarget, event.clientX, event.clientY);
+                        setDraggingSectionId(section.id);
+                        setSectionDropMarker(getSectionDropMarker(sectionListRef.current, event.clientY, section.id));
+                      }}
+                      onDragEnd={() => {
+                        setDraggingSectionId(null);
+                        setSectionDropMarker(null);
+                      }}
+                      className={cn(
+                        "group relative grid w-full cursor-pointer grid-cols-[18px_minmax(0,1fr)] gap-2 rounded-lg border px-2.5 py-2 text-left text-sm transition duration-200",
+                        isActive
+                          ? "border-ink-black bg-ink-black text-parchment-cream"
+                          : "border-ink-black/15 hover:border-ink-black/45 hover:bg-white/35",
+                        isDragging && "scale-[0.98] border-ink-black bg-mint-wash/35 shadow-editorial"
+                      )}
+                    >
+                      <div className="flex cursor-grab items-center justify-center pt-0.5 text-current/55 active:cursor-grabbing">
+                        <GripVertical className="size-4" />
+                      </div>
+                      <div className="min-w-0 pr-6">
+                        <span className="block truncate">{section.title}</span>
+                        <span className="mt-1 block text-xs opacity-70">{section.status}</span>
+                        {uploadedRevisions[section.id] ? <span className="mt-1 block truncate text-xs opacity-70">已上传更正版</span> : null}
+                      </div>
+                      <button
+                        type="button"
+                        aria-label={`删除章节 ${section.title}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          deleteSection(section.id);
+                        }}
+                        className={cn(
+                          "focus-ring absolute right-2 top-2 rounded-md p-1 opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100",
+                          isActive ? "text-parchment-cream/75 hover:bg-parchment-cream/15 hover:text-parchment-cream" : "text-warm-stone hover:bg-peach-wash/45 hover:text-ink-black",
+                          sections.length <= 1 && "pointer-events-none opacity-30"
+                        )}
+                        disabled={sections.length <= 1}
+                      >
+                        <Trash2 className="size-3.5" />
+                      </button>
+                    </div>
+                    {showAfter ? (
+                      <div className="h-2 rounded-full border border-dashed border-ink-black/40 bg-mint-wash/55 transition-all" />
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+            <Button className="mt-4 w-full" onClick={() => setAddSectionOpen(true)}>
+              <Plus className="size-4" />添加章节
+            </Button>
           </div>
-          <Button className="mt-4 w-full" onClick={() => setAddSectionOpen(true)}>
-            <Plus className="size-4" />添加章节
-          </Button>
         </Card>
 
         <Card className="min-w-0">

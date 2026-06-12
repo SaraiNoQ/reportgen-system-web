@@ -58,6 +58,44 @@ type DropMarker = {
   position: "before" | "after";
 };
 
+function getQueueDropMarker(container: HTMLElement | null, clientY: number, draggingId?: string | null): DropMarker | null {
+  const queueItems = Array.from(container?.querySelectorAll<HTMLElement>("[data-queue-item-id]") ?? []);
+  const availableItems = queueItems.filter((queueItem) => queueItem.dataset.queueItemId !== draggingId);
+  if (availableItems.length === 0) return null;
+
+  for (const queueItem of availableItems) {
+    const bounds = queueItem.getBoundingClientRect();
+    const itemId = queueItem.dataset.queueItemId;
+    if (!itemId) continue;
+    if (clientY < bounds.top + bounds.height / 2) {
+      return { targetId: itemId, position: "before" };
+    }
+  }
+
+  const lastItem = availableItems[availableItems.length - 1];
+  const lastItemId = lastItem?.dataset.queueItemId;
+  return lastItemId ? { targetId: lastItemId, position: "after" } : null;
+}
+
+function setFloatingDragImage(dataTransfer: DataTransfer, source: HTMLElement, clientX: number, clientY: number) {
+  const bounds = source.getBoundingClientRect();
+  const preview = source.cloneNode(true) as HTMLElement;
+  preview.setAttribute("aria-hidden", "true");
+  preview.style.position = "fixed";
+  preview.style.top = "-1000px";
+  preview.style.left = "-1000px";
+  preview.style.width = `${bounds.width}px`;
+  preview.style.pointerEvents = "none";
+  preview.style.opacity = "0.96";
+  preview.style.transform = "rotate(-0.6deg) scale(1.02)";
+  preview.style.boxShadow = "0 18px 40px rgba(18, 16, 14, 0.24)";
+  preview.style.background = "rgb(250, 246, 239)";
+  preview.style.zIndex = "9999";
+  document.body.appendChild(preview);
+  dataTransfer.setDragImage(preview, clientX - bounds.left, clientY - bounds.top);
+  window.setTimeout(() => preview.remove(), 0);
+}
+
 function createFieldSet(fileId: string, sourceFields: ExtractedField[], fileIndex = 0) {
   return sourceFields.map((field) => ({
     ...field,
@@ -182,6 +220,7 @@ export function RecordsClient({
   const [previewAssets, setPreviewAssets] = useState<Record<string, PreviewAsset>>({});
   const [previewingAsset, setPreviewingAsset] = useState<PreviewAsset | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const uploadQueueListRef = useRef<HTMLDivElement | null>(null);
   const scheduledRef = useRef<Set<string>>(new Set());
   const previewAssetsRef = useRef(previewAssets);
   const uploadQueueRef = useRef(uploadQueue);
@@ -1001,6 +1040,22 @@ export function RecordsClient({
           <div
             className="flex max-h-[82vh] w-full max-w-[760px] flex-col rounded-xl border border-ink-black bg-parchment-cream p-4 shadow-editorial"
             onClick={(event) => event.stopPropagation()}
+            onDragOver={(event) => {
+              if (!draggingQueueId) return;
+              event.preventDefault();
+              event.dataTransfer.dropEffect = "move";
+              setQueueDropMarker(getQueueDropMarker(uploadQueueListRef.current, event.clientY, draggingQueueId));
+            }}
+            onDrop={(event) => {
+              if (!draggingQueueId) return;
+              event.preventDefault();
+              const marker = queueDropMarker ?? getQueueDropMarker(uploadQueueListRef.current, event.clientY, draggingQueueId);
+              if (marker) {
+                moveQueueItem(draggingQueueId, marker.targetId, marker.position);
+              }
+              setDraggingQueueId(null);
+              setQueueDropMarker(null);
+            }}
           >
             <div className="flex items-start justify-between gap-3 border-b border-ink-black/15 pb-3">
               <div>
@@ -1014,66 +1069,80 @@ export function RecordsClient({
             </div>
 
             <div className="mt-3 flex-1 overflow-y-auto pr-1">
-              <div className="space-y-2">
+              <div ref={uploadQueueListRef} className="space-y-2">
                 {uploadQueue.map((item, index) => {
                   const showBefore = queueDropMarker?.targetId === item.id && queueDropMarker.position === "before";
                   const showAfter = queueDropMarker?.targetId === item.id && queueDropMarker.position === "after";
                   const isDragging = draggingQueueId === item.id;
                   return (
-                    <div key={item.id} className="space-y-2">
+                    <div
+                      key={item.id}
+                      className={cn(
+                        "space-y-2 transition-all duration-200",
+                        isDragging && "h-0 overflow-hidden opacity-0"
+                      )}
+                    >
                       {showBefore ? (
                         <div className="h-2 rounded-full border border-dashed border-ink-black/40 bg-mint-wash/55 transition-all" />
                       ) : null}
                       <div
-                        draggable
+                        data-queue-item-id={item.id}
                         onDragStart={(event) => {
-                          const target = event.target as HTMLElement;
-                          if (target.closest("input,button,a")) {
+                          const target = event.target;
+                          if (!(target instanceof Element) || !target.closest('[data-queue-drag-handle="true"]')) {
                             event.preventDefault();
                             return;
                           }
                           event.dataTransfer.effectAllowed = "move";
                           event.dataTransfer.setData("text/plain", item.id);
+                          setFloatingDragImage(event.dataTransfer, event.currentTarget, event.clientX, event.clientY);
                           setDraggingQueueId(item.id);
-                          setQueueDropMarker(null);
-                        }}
-                        onDragOver={(event) => {
-                          event.preventDefault();
-                          if (!draggingQueueId || draggingQueueId === item.id) return;
-                          const bounds = event.currentTarget.getBoundingClientRect();
-                          const position = event.clientY > bounds.top + bounds.height / 2 ? "after" : "before";
-                          setQueueDropMarker({ targetId: item.id, position });
-                        }}
-                        onDrop={(event) => {
-                          event.preventDefault();
-                          if (draggingQueueId) {
-                            moveQueueItem(draggingQueueId, item.id, queueDropMarker?.position ?? "before");
-                          }
-                          setDraggingQueueId(null);
-                          setQueueDropMarker(null);
+                          setQueueDropMarker(getQueueDropMarker(uploadQueueListRef.current, event.clientY, item.id));
                         }}
                         onDragEnd={() => {
                           setDraggingQueueId(null);
                           setQueueDropMarker(null);
                         }}
                         className={cn(
-                          "grid gap-2 rounded-lg border border-ink-black/12 bg-parchment-cream/55 p-2.5 transition md:grid-cols-[28px_32px_minmax(0,1fr)_80px_120px_96px]",
-                          isDragging && "border-ink-black bg-mint-wash/35 opacity-45 shadow-editorial"
+                          "grid gap-2 rounded-lg border border-ink-black/12 bg-parchment-cream/55 p-2.5 transition duration-200 md:grid-cols-[28px_32px_minmax(0,1fr)_80px_120px_96px]",
+                          isDragging && "scale-[0.98] border-ink-black bg-mint-wash/35 shadow-editorial"
                         )}
                       >
-                        <div className="flex cursor-grab items-center justify-center text-warm-stone active:cursor-grabbing">
+                        <div
+                          draggable
+                          data-queue-drag-handle="true"
+                          title="拖动调整顺序"
+                          className="flex cursor-grab items-center justify-center text-warm-stone active:cursor-grabbing"
+                        >
                           <GripVertical className="size-4" />
                         </div>
                         <div className="flex items-center justify-center text-sm font-medium text-graphite">
                           {index + 1}
                         </div>
                         <div className="min-w-0">
-                          <Input
-                            value={item.name}
-                            onChange={(event) => updateQueueName(item.id, event.target.value)}
-                            className="w-full"
-                            aria-label={`${item.originalName} 文件名`}
-                          />
+                          <div className="relative">
+                            <Input
+                              value={item.name}
+                              onChange={(event) => updateQueueName(item.id, event.target.value)}
+                              className="w-full pr-8"
+                              aria-label={`${item.originalName} 文件名`}
+                            />
+                            {item.name ? (
+                              <button
+                                type="button"
+                                aria-label="清空文件名"
+                                title="清空文件名"
+                                onMouseDown={(event) => event.preventDefault()}
+                                onClick={(event) => {
+                                  updateQueueName(item.id, "");
+                                  event.currentTarget.parentElement?.querySelector("input")?.focus();
+                                }}
+                                className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-1 text-warm-stone transition hover:bg-ink-black/10 hover:text-ink-black"
+                              >
+                                <X className="size-3.5" />
+                              </button>
+                            ) : null}
+                          </div>
                           <p className="mt-1 truncate text-xs text-warm-stone">原始名称：{item.originalName}</p>
                         </div>
                         <div className="flex items-center justify-center text-sm">{item.type}</div>
