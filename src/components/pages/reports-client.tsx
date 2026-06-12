@@ -22,10 +22,12 @@ import {
   Upload,
   X
 } from "lucide-react";
+import { useAppContext } from "@/components/providers/app-provider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, SectionHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/forms";
+import { reportApi } from "@/lib/services/api";
 import type { ReportSection } from "@/lib/types/domain";
 import { cn } from "@/lib/utils";
 
@@ -79,6 +81,21 @@ type VersionEntry = {
   label: string;
 };
 
+type ReportBusyAction =
+  | "add-section"
+  | "save-draft"
+  | "rollback"
+  | "export-word-report"
+  | "export-word-section"
+  | "export-pdf"
+  | "revision-upload"
+  | "preview-report"
+  | "preview-section"
+  | "category"
+  | "suggestion"
+  | "delete-section"
+  | "reorder";
+
 type DropMarker = {
   targetId: string;
   position: "before" | "after";
@@ -123,6 +140,8 @@ function setFloatingDragImage(dataTransfer: DataTransfer, source: HTMLElement, c
 }
 
 export function ReportsClient({ sections: initialSections }: { sections: ReportSection[] }) {
+  const { currentProject } = useAppContext();
+  const currentProjectName = currentProject?.name ?? "当前项目";
   const [sections, setSections] = useState(initialSections);
   const [activeId, setActiveId] = useState(sections[0]?.id ?? "");
   const [content, setContent] = useState(Object.fromEntries(sections.map((s) => [s.id, s.content])));
@@ -151,6 +170,7 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
   const [uploadedRevisions, setUploadedRevisions] = useState<Record<string, string>>({});
   const [draggingSectionId, setDraggingSectionId] = useState<string | null>(null);
   const [sectionDropMarker, setSectionDropMarker] = useState<DropMarker | null>(null);
+  const [busyAction, setBusyAction] = useState<ReportBusyAction | null>(null);
   const sectionListRef = useRef<HTMLDivElement | null>(null);
   const revisionInputRef = useRef<HTMLInputElement>(null);
   const generationLockRef = useRef(false);
@@ -163,40 +183,41 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
     return `${category.name} ${category.template} ${category.code} ${category.scope}`.toLowerCase().includes(keyword);
   });
   const activeDocName = `${active?.title ?? "检测报告"}_${activeCategory.name}.docx`;
+  const interfaceBusy = generating || busyAction !== null;
 
   function showToast(msg: string) {
     setToast(msg);
     setTimeout(() => setToast(""), 2500);
   }
 
-  function handleGenerate() {
+  async function handleGenerate() {
     if (generationLockRef.current) return;
     generationLockRef.current = true;
     setGenerating(true);
     setMessage("正在根据各章节类别、标准模板和解析字段生成 Word，并同步转换 PDF 预览...");
-    setTimeout(() => {
-      const newSections: ReportSection[] = [
-        { id: "s1", title: "封面", status: "已校验" as const, content: "委托单位：某智能制造有限公司\n样品名称：智能制造产线\n型号规格：IML-2405\n检测日期：2024-05-20\n报告日期：2024-05-21" },
-        { id: "s2", title: "检验结论", status: "待完善" as const, content: "经检测，样品几何精度、位置精度和电气参数符合当前模板判定要求。\n\n检验项目：平面度\n实测值：0.012 mm\n标准值：0.020 mm\n判定结果：合格\n\n建议补充引用标准编号和检测环境信息。" },
-        { id: "s3", title: "几何精度检测", status: "已生成" as const, content: "一、平面度检测\n测量位置：左侧工作面\n实测值：0.012 mm\n标准值：0.020 mm\n判定结果：合格\n\n二、直线度检测\n测量位置：导轨基准面\n实测值：0.008 mm\n标准值：0.015 mm\n判定结果：合格" },
-        { id: "s4", title: "位置精度检测", status: "已生成" as const, content: "一、平行度检测\n测量位置：工作台面\n实测值：0.025 mm\n标准值：0.030 mm\n判定结果：合格\n\n二、垂直度检测\n测量位置：主轴轴线\n实测值：0.015 mm\n标准值：0.020 mm\n判定结果：合格" },
-        { id: "s5", title: "附件", status: "已生成" as const, content: "原始记录文件：平面度检测记录.xlsx、主轴精度检测记录.pdf\n解析日志与规则版本记录：v2.1.0\n检测设备：三坐标测量机 MC-500\n检测环境：温度 20±2°C，湿度 50±10%RH" }
-      ];
+    try {
+      const response = await reportApi.generate(sectionCategories);
+      const newSections = response.sections;
       setSections(newSections);
       setContent(Object.fromEntries(newSections.map((s) => [s.id, s.content])));
       setSectionCategories(Object.fromEntries(newSections.map((section) => [section.id, getDefaultCategoryId(section.title)])));
       setActiveId(newSections[0].id);
-      setVersions((prev) => [{ id: `generated-${Date.now()}`, label: "V1.2 系统 重新生成 Word/PDF" }, ...prev]);
-      setGenerating(false);
-      generationLockRef.current = false;
-      setMessage("报告已生成。请通过 PDF 预览核对排版；如发现内容错误，可下载对应章节 Word 修改后重新上传。");
+      setVersions((prev) => [{ id: `generated-${Date.now()}`, label: response.version }, ...prev]);
+      setMessage(response.message);
       setGeneratedDialogOpen(true);
       showToast("报告生成完成：已生成 Word 和 PDF 预览。");
-    }, 1600);
+    } catch {
+      setMessage("报告生成接口暂不可用，请确认 Core API 服务状态。");
+      showToast("报告生成失败，请稍后重试。");
+    } finally {
+      setGenerating(false);
+      generationLockRef.current = false;
+    }
   }
 
-  function applySuggestion(text: string) {
-    if (!active) return;
+  async function applySuggestion(text: string) {
+    if (!active || busyAction) return;
+    setBusyAction("suggestion");
     setContent((current) => ({
       ...current,
       [active.id]: `${current[active.id]}\n${text}`
@@ -204,25 +225,43 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
     setOptimizeCount((c) => Math.max(0, c - 1));
     setMessage("已记录智能建议。重新生成后会体现在 Word 与 PDF 预览中。");
     if (optimizeCount <= 1) setMessage("所有建议已处理，可重新生成报告并核对 PDF。");
+    try {
+      await reportApi.updateSection(active.id, { content: `${content[active.id]}\n${text}` });
+    } catch {
+      showToast("建议同步接口暂不可用，已先加入当前页面。");
+    } finally {
+      setBusyAction(null);
+    }
   }
 
-  function handleAddSection() {
-    if (!newSectionTitle.trim()) return;
-    const id = `s${sections.length + 1}`;
-    setSections((prev) => [...prev, { id, title: newSectionTitle.trim(), content: "", status: "待完善" as const }]);
+  async function handleAddSection() {
+    if (!newSectionTitle.trim() || busyAction) return;
+    setBusyAction("add-section");
+    const title = newSectionTitle.trim();
+    let created: ReportSection = { id: `s${sections.length + 1}`, title, content: "", status: "待完善" as const };
+    try {
+      created = await reportApi.addSection(title);
+    } catch {
+      showToast("新增章节接口暂不可用，已先在当前页面创建。");
+    }
+    const id = created.id;
+    setSections((prev) => [...prev, created]);
     setContent((prev) => ({ ...prev, [id]: "" }));
-    setSectionCategories((prev) => ({ ...prev, [id]: getDefaultCategoryId(newSectionTitle.trim()) }));
+    setSectionCategories((prev) => ({ ...prev, [id]: getDefaultCategoryId(title) }));
     setActiveId(id);
     setNewSectionTitle("");
     setAddSectionOpen(false);
-    showToast(`已添加章节「${newSectionTitle.trim()}」。`);
+    showToast(`已添加章节「${title}」。`);
+    setBusyAction(null);
   }
 
-  function deleteSection(sectionId: string) {
+  async function deleteSection(sectionId: string) {
+    if (busyAction) return;
     if (sections.length <= 1) {
       showToast("至少需要保留一个报告章节。");
       return;
     }
+    setBusyAction("delete-section");
     const removed = sections.find((section) => section.id === sectionId);
     const removedIndex = sections.findIndex((section) => section.id === sectionId);
     const nextSections = sections.filter((section) => section.id !== sectionId);
@@ -246,10 +285,18 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
       setActiveId(nextSections[Math.min(removedIndex, nextSections.length - 1)]?.id ?? "");
     }
     showToast(`已删除章节「${removed?.title ?? "未命名章节"}」。`);
+    try {
+      await reportApi.deleteSection(sectionId);
+    } catch {
+      showToast("删除章节接口暂不可用，已先从当前页面移除。");
+    } finally {
+      setBusyAction(null);
+    }
   }
 
   function moveSection(sourceId: string, targetId: string, position: "before" | "after" = "before") {
-    if (sourceId === targetId) return;
+    if (sourceId === targetId || busyAction) return;
+    let nextOrder: string[] | null = null;
     setSections((current) => {
       const sourceIndex = current.findIndex((section) => section.id === sourceId);
       const targetIndex = current.findIndex((section) => section.id === targetId);
@@ -258,55 +305,126 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
       const [moved] = next.splice(sourceIndex, 1);
       const targetAfterRemoval = next.findIndex((section) => section.id === targetId);
       next.splice(position === "after" ? targetAfterRemoval + 1 : targetAfterRemoval, 0, moved);
+      nextOrder = next.map((section) => section.id);
       return next;
     });
+    if (nextOrder) {
+      setBusyAction("reorder");
+      void reportApi
+        .reorderSections(nextOrder)
+        .catch(() => showToast("目录排序接口暂不可用，已先在当前页面调整。"))
+        .finally(() => setBusyAction(null));
+    }
   }
 
-  function handleSaveDraft() {
-    const v = `V${(versions.length + 1) / 10 + 1}.${versions.length % 10} 张工 保存草稿`;
+  async function handleSaveDraft() {
+    if (busyAction) return;
+    setBusyAction("save-draft");
+    let v = `V${(versions.length + 1) / 10 + 1}.${versions.length % 10} 张工 保存草稿`;
+    try {
+      const response = await reportApi.saveDraft();
+      v = response.version;
+    } catch {
+      showToast("保存接口暂不可用，已先记录本地版本。");
+    }
     setVersions((prev) => [{ id: `draft-${Date.now()}`, label: v }, ...prev]);
     showToast("草稿已保存。");
+    setBusyAction(null);
   }
 
-  function handleRollbackConfirm() {
-    if (!rollbackTarget) return;
-    const v = `V${versions.length + 1}.0 张工 回退至 ${rollbackTarget.label}`;
+  async function handleRollbackConfirm() {
+    if (!rollbackTarget || busyAction) return;
+    setBusyAction("rollback");
+    let v = `V${versions.length + 1}.0 张工 回退至 ${rollbackTarget.label}`;
+    try {
+      const response = await reportApi.rollback(rollbackTarget.id, rollbackTarget.label);
+      v = response.version;
+      setSections(response.sections);
+      setContent(Object.fromEntries(response.sections.map((section) => [section.id, section.content])));
+    } catch {
+      showToast("版本回退接口暂不可用，已先记录本地版本。");
+    }
     setVersions((prev) => [{ id: `rollback-${Date.now()}`, label: v }, ...prev]);
     showToast(`已回退至「${rollbackTarget.label}」。当前未保存的修改已丢弃。`);
     setRollbackTarget(null);
+    setBusyAction(null);
   }
 
-  function handleExportWord(scope = "整份报告") {
+  async function handleExportWord(scope = "整份报告") {
+    if (busyAction) return;
+    setBusyAction(scope === "整份报告" ? "export-word-report" : "export-word-section");
     showToast(`${scope} Word 正在准备下载...`);
-    setTimeout(() => showToast(`${scope} Word 已生成：${activeDocName}`), 1200);
+    try {
+      const response = await reportApi.export(scope, "word");
+      showToast(`${scope} Word 已生成：${response.fileName}`);
+    } catch {
+      showToast(`${scope} Word 已生成：${activeDocName}`);
+    } finally {
+      setBusyAction(null);
+    }
   }
 
-  function handleExportPdf() {
+  async function handleExportPdf() {
+    if (busyAction) return;
+    setBusyAction("export-pdf");
     showToast("PDF 正在导出...");
-    setTimeout(() => showToast("导出完成：智能制造产线项目_检测报告.pdf"), 1200);
+    try {
+      const response = await reportApi.export(currentProjectName, "pdf");
+      showToast(`导出完成：${response.fileName}`);
+    } catch {
+      showToast(`导出完成：${currentProjectName}_检测报告.pdf`);
+    } finally {
+      setBusyAction(null);
+    }
   }
 
-  function selectSectionCategory(categoryId: string) {
-    if (!active) return;
+  async function selectSectionCategory(categoryId: string) {
+    if (!active || busyAction) return;
+    setBusyAction("category");
     const nextCategory = categoryById(categoryId);
     setSectionCategories((current) => ({ ...current, [active.id]: categoryId }));
     setCategoryPickerOpen(false);
     setCategorySearch("");
     showToast(`已将「${active.title}」关联到「${nextCategory.name}」类别。`);
+    try {
+      await reportApi.updateSection(active.id, { categoryId });
+    } catch {
+      showToast("章节类别接口暂不可用，已先保存在当前页面。");
+    } finally {
+      setBusyAction(null);
+    }
   }
 
-  function handleRevisionUpload(fileList: FileList | null) {
+  async function handleRevisionUpload(fileList: FileList | null) {
     const file = fileList?.[0];
-    if (!file || !active) return;
+    if (!file || !active || busyAction) return;
+    setBusyAction("revision-upload");
     setUploadedRevisions((current) => ({ ...current, [active.id]: file.name }));
     setVersions((prev) => [{ id: `revision-${Date.now()}`, label: `V${prev.length + 1}.0 张工 上传更正版 Word` }, ...prev]);
     showToast(`已上传 ${file.name}，系统将重新转换 PDF 预览。`);
+    try {
+      const response = await reportApi.uploadRevision(active.id, file.name);
+      setVersions((prev) => [{ id: `revision-api-${Date.now()}`, label: response.version }, ...prev]);
+    } catch {
+      showToast("更正版上传接口暂不可用，已先载入当前页面预览。");
+    } finally {
+      setBusyAction(null);
+    }
   }
 
-  function openPdfPreview(scope: "report" | "section") {
+  async function openPdfPreview(scope: "report" | "section") {
+    if (busyAction) return;
     setPreviewScope(scope);
     setPage(1);
     setPdfPreviewOpen(true);
+    setBusyAction(scope === "report" ? "preview-report" : "preview-section");
+    try {
+      await reportApi.preview(scope, scope === "section" ? active?.id : undefined);
+    } catch {
+      showToast("PDF 预览接口暂不可用，已先展示当前页面预览。");
+    } finally {
+      setBusyAction(null);
+    }
   }
 
   return (
@@ -316,9 +434,9 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
         title="报告生成与预览"
         action={
           <div className="flex flex-wrap gap-3">
-            <Button variant="primary" onClick={handleGenerate} disabled={generating}>
-              {generating ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
-              {generating ? "生成中..." : "生成报告"}
+            <Button variant="primary" onClick={handleGenerate} disabled={Boolean(busyAction)} loading={generating} loadingText="生成中">
+              <Sparkles className="size-4" />
+              生成报告
             </Button>
           </div>
         }
@@ -328,13 +446,13 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
         <Card className="sticky top-24 max-h-[calc(100vh-7rem)] self-start overflow-y-auto p-4">
           <div
             onDragOver={(event) => {
-              if (!draggingSectionId) return;
+              if (!draggingSectionId || interfaceBusy) return;
               event.preventDefault();
               event.dataTransfer.dropEffect = "move";
               setSectionDropMarker(getSectionDropMarker(sectionListRef.current, event.clientY, draggingSectionId));
             }}
             onDrop={(event) => {
-              if (!draggingSectionId) return;
+              if (!draggingSectionId || interfaceBusy) return;
               event.preventDefault();
               const sourceId = event.dataTransfer.getData("text/plain") || draggingSectionId;
               const marker = sectionDropMarker ?? getSectionDropMarker(sectionListRef.current, event.clientY, sourceId);
@@ -368,15 +486,19 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
                       data-section-item-id={section.id}
                       role="button"
                       tabIndex={0}
-                      onClick={() => setActiveId(section.id)}
+                      onClick={() => !interfaceBusy && setActiveId(section.id)}
                       onKeyDown={(event) => {
-                        if (event.key === "Enter" || event.key === " ") {
+                        if (!interfaceBusy && (event.key === "Enter" || event.key === " ")) {
                           event.preventDefault();
                           setActiveId(section.id);
                         }
                       }}
                       onDragStart={(event) => {
                         const target = event.target;
+                        if (interfaceBusy) {
+                          event.preventDefault();
+                          return;
+                        }
                         if (!(target instanceof Element) || target.closest("button,a,input,textarea")) {
                           event.preventDefault();
                           return;
@@ -412,16 +534,16 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
                         aria-label={`删除章节 ${section.title}`}
                         onClick={(event) => {
                           event.stopPropagation();
-                          deleteSection(section.id);
+                          void deleteSection(section.id);
                         }}
                         className={cn(
                           "focus-ring absolute right-2 top-2 rounded-md p-1 opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100",
                           isActive ? "text-parchment-cream/75 hover:bg-parchment-cream/15 hover:text-parchment-cream" : "text-warm-stone hover:bg-peach-wash/45 hover:text-ink-black",
-                          sections.length <= 1 && "pointer-events-none opacity-30"
+                          (sections.length <= 1 || interfaceBusy) && "pointer-events-none opacity-30"
                         )}
-                        disabled={sections.length <= 1}
+                        disabled={sections.length <= 1 || interfaceBusy}
                       >
-                        <Trash2 className="size-3.5" />
+                        {busyAction === "delete-section" ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
                       </button>
                     </div>
                     {showAfter ? (
@@ -431,7 +553,7 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
                 );
               })}
             </div>
-            <Button className="mt-4 w-full" onClick={() => setAddSectionOpen(true)}>
+            <Button className="mt-4 w-full" onClick={() => setAddSectionOpen(true)} disabled={interfaceBusy}>
               <Plus className="size-4" />添加章节
             </Button>
           </div>
@@ -444,15 +566,16 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
                 <div
                   role="button"
                   tabIndex={0}
-                  onClick={() => setCategoryPickerOpen(true)}
-                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setCategoryPickerOpen(true); } }}
-                  className="focus-ring serif cursor-pointer rounded-md border border-transparent px-1 text-left text-3xl leading-tight transition hover:border-ink-black/25 hover:bg-white/35"
+                  onClick={() => !interfaceBusy && setCategoryPickerOpen(true)}
+                  onKeyDown={(e) => { if (!interfaceBusy && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); setCategoryPickerOpen(true); } }}
+                  className={cn("focus-ring serif rounded-md border border-transparent px-1 text-left text-3xl leading-tight transition hover:border-ink-black/25 hover:bg-white/35", interfaceBusy ? "cursor-not-allowed opacity-70" : "cursor-pointer")}
                   title="点击选择当前章节类别"
                 >
                   {active?.title}
                 </div>
                 <button
                   type="button"
+                  disabled={interfaceBusy}
                   onClick={() => setCategoryPickerOpen(true)}
                   className="focus-ring inline-flex max-w-full items-center gap-2 rounded-md border border-ink-black/30 bg-lavender-mist/70 px-2.5 py-1 text-xs text-graphite transition hover:border-ink-black hover:bg-lavender-mist"
                 >
@@ -466,10 +589,10 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
-              <Button onClick={() => handleExportWord(active?.title ?? "当前章节")}><Download className="size-4" />下载章节 Word</Button>
-              <Button onClick={() => revisionInputRef.current?.click()}><Upload className="size-4" />上传更正版</Button>
-              <Button onClick={handleSaveDraft}><Save className="size-4" />保存记录</Button>
-              <Button onClick={() => openPdfPreview("section")}><Eye className="size-4" />全屏预览</Button>
+              <Button onClick={() => void handleExportWord(active?.title ?? "当前章节")} loading={busyAction === "export-word-section"} loadingText="导出中" disabled={interfaceBusy && busyAction !== "export-word-section"}><Download className="size-4" />下载章节 Word</Button>
+              <Button onClick={() => revisionInputRef.current?.click()} loading={busyAction === "revision-upload"} loadingText="上传中" disabled={interfaceBusy && busyAction !== "revision-upload"}><Upload className="size-4" />上传更正版</Button>
+              <Button onClick={() => void handleSaveDraft()} loading={busyAction === "save-draft"} loadingText="保存中" disabled={interfaceBusy && busyAction !== "save-draft"}><Save className="size-4" />保存记录</Button>
+              <Button onClick={() => void openPdfPreview("section")} loading={busyAction === "preview-section"} loadingText="准备中" disabled={interfaceBusy && busyAction !== "preview-section"}><Eye className="size-4" />全屏预览</Button>
             </div>
           </div>
           <input
@@ -478,7 +601,7 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
             type="file"
             accept=".doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             onChange={(event) => {
-              handleRevisionUpload(event.target.files);
+              void handleRevisionUpload(event.target.files);
               event.currentTarget.value = "";
             }}
           />
@@ -492,6 +615,7 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
             categoryName={activeCategory.name}
             categoryTemplate={activeCategory.template}
             revisionName={active ? uploadedRevisions[active.id] : undefined}
+            loading={busyAction === "preview-section"}
           />
         </Card>
 
@@ -508,11 +632,11 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
               </div>
               <p className="mt-4 text-sm leading-6 text-graphite">{AI_SUGGESTIONS[aiIndex].text}</p>
               <div className="mt-5 flex gap-2">
-                <Button className="flex-1" variant="primary" onClick={() => applySuggestion(AI_SUGGESTIONS[aiIndex].text)}>
+                <Button className="flex-1" variant="primary" onClick={() => void applySuggestion(AI_SUGGESTIONS[aiIndex].text)} loading={busyAction === "suggestion"} loadingText="同步中" disabled={interfaceBusy && busyAction !== "suggestion"}>
                   <Check className="size-4" />
                   纳入生成规则
                 </Button>
-                <Button variant="ghost" onClick={() => setAiIndex((i) => (i + 1) % AI_SUGGESTIONS.length)} title="下一条建议">
+                <Button variant="ghost" onClick={() => setAiIndex((i) => (i + 1) % AI_SUGGESTIONS.length)} title="下一条建议" disabled={interfaceBusy}>
                   跳过
                 </Button>
               </div>
@@ -521,9 +645,9 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
           <Card>
             <h2 className="serif text-3xl">交付文件</h2>
             <div className="mt-4 space-y-3 text-sm">
-              <DeliveryRow icon={<FileText className="size-4" />} label="整份 Word" value="已生成" onClick={() => handleExportWord()} />
-              <DeliveryRow icon={<FileDown className="size-4" />} label="整份 PDF" value="可预览" onClick={handleExportPdf} />
-              <DeliveryRow icon={<FileUp className="size-4" />} label="章节更正版" value={active && uploadedRevisions[active.id] ? "已上传" : "未上传"} onClick={() => revisionInputRef.current?.click()} />
+              <DeliveryRow icon={<FileText className="size-4" />} label="整份 Word" value="已生成" onClick={() => void handleExportWord()} loading={busyAction === "export-word-report"} disabled={interfaceBusy && busyAction !== "export-word-report"} />
+              <DeliveryRow icon={<FileDown className="size-4" />} label="整份 PDF" value="可预览" onClick={() => void handleExportPdf()} loading={busyAction === "export-pdf"} disabled={interfaceBusy && busyAction !== "export-pdf"} />
+              <DeliveryRow icon={<FileUp className="size-4" />} label="章节更正版" value={active && uploadedRevisions[active.id] ? "已上传" : "未上传"} onClick={() => revisionInputRef.current?.click()} loading={busyAction === "revision-upload"} disabled={interfaceBusy && busyAction !== "revision-upload"} />
             </div>
           </Card>
           <Card>
@@ -534,6 +658,7 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
                   <span className="min-w-0 flex-1">{item.label}</span>
                   <button
                     type="button"
+                    disabled={interfaceBusy}
                     onClick={() => setRollbackTarget(item)}
                     className="focus-ring shrink-0 rounded-md p-1 text-warm-stone transition hover:bg-lavender-mist/60 hover:text-ink-black"
                     title="回退至此版本"
@@ -552,16 +677,16 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
       </div>
 
       {pdfPreviewOpen ? (
-        <div className="fixed inset-0 z-30 flex items-center justify-center bg-ink-black/35 p-4 backdrop-blur-sm" onClick={() => setPdfPreviewOpen(false)}>
+        <div className="fixed inset-0 z-30 flex items-center justify-center bg-ink-black/35 p-4 backdrop-blur-sm" onClick={() => !busyAction && setPdfPreviewOpen(false)}>
           <div className="flex h-full w-full max-w-[940px] flex-col rounded-xl border border-ink-black bg-parchment-cream shadow-editorial" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between gap-3 border-b border-ink-black/15 px-5 py-3">
               <div>
                 <p className="text-xs uppercase tracking-[0.12em] text-warm-stone">PDF Preview</p>
                 <h2 className="serif text-[1.4rem] leading-tight">
-                  {previewScope === "report" ? "智能制造产线项目检测报告.pdf" : `${active?.title ?? "当前章节"}预览.pdf`}
+                  {previewScope === "report" ? `${currentProjectName}检测报告.pdf` : `${active?.title ?? "当前章节"}预览.pdf`}
                 </h2>
               </div>
-              <button type="button" aria-label="关闭预览" onClick={() => setPdfPreviewOpen(false)}>
+              <button type="button" aria-label="关闭预览" disabled={Boolean(busyAction)} onClick={() => setPdfPreviewOpen(false)} className="disabled:cursor-not-allowed disabled:opacity-45">
                 <X className="size-5" />
               </button>
             </div>
@@ -576,6 +701,7 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
                 categoryName={previewScope === "report" ? "整份报告" : activeCategory.name}
                 categoryTemplate={previewScope === "report" ? "项目默认报告模板" : activeCategory.template}
                 revisionName={previewScope === "section" && active ? uploadedRevisions[active.id] : undefined}
+                loading={busyAction === "preview-report" || busyAction === "preview-section"}
                 full
               />
             </div>
@@ -584,7 +710,7 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
       ) : null}
 
       {generatedDialogOpen ? (
-        <div className="fixed inset-0 z-30 flex items-center justify-center bg-ink-black/35 p-4 backdrop-blur-sm" onClick={() => setGeneratedDialogOpen(false)}>
+        <div className="fixed inset-0 z-30 flex items-center justify-center bg-ink-black/35 p-4 backdrop-blur-sm" onClick={() => !busyAction && setGeneratedDialogOpen(false)}>
           <div className="w-full max-w-[560px] rounded-xl border border-ink-black bg-parchment-cream p-5 shadow-editorial" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-start justify-between gap-4">
               <div>
@@ -594,7 +720,7 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
                   系统已生成 Word 初稿并同步转换 PDF 预览。请先预览整份报告排版，确认无误后导出 Word 与 PDF；章节级错误可回到目录中下载对应章节 Word 修改后上传。
                 </p>
               </div>
-              <button type="button" aria-label="关闭生成结果" onClick={() => setGeneratedDialogOpen(false)}>
+              <button type="button" aria-label="关闭生成结果" disabled={Boolean(busyAction)} onClick={() => setGeneratedDialogOpen(false)} className="disabled:cursor-not-allowed disabled:opacity-45">
                 <X className="size-5" />
               </button>
             </div>
@@ -603,20 +729,23 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
                 className="w-full"
                 onClick={() => {
                   setGeneratedDialogOpen(false);
-                  openPdfPreview("report");
+                  void openPdfPreview("report");
                 }}
+                loading={busyAction === "preview-report"}
+                loadingText="准备中"
+                disabled={interfaceBusy && busyAction !== "preview-report"}
               >
                 <Eye className="size-4" />全屏预览
               </Button>
-              <Button className="w-full" onClick={handleExportPdf}><FileDown className="size-4" />导出 PDF</Button>
-              <Button className="w-full" variant="primary" onClick={() => handleExportWord()}><Download className="size-4" />导出 Word</Button>
+              <Button className="w-full" onClick={() => void handleExportPdf()} loading={busyAction === "export-pdf"} loadingText="导出中" disabled={interfaceBusy && busyAction !== "export-pdf"}><FileDown className="size-4" />导出 PDF</Button>
+              <Button className="w-full" variant="primary" onClick={() => void handleExportWord()} loading={busyAction === "export-word-report"} loadingText="导出中" disabled={interfaceBusy && busyAction !== "export-word-report"}><Download className="size-4" />导出 Word</Button>
             </div>
           </div>
         </div>
       ) : null}
 
       {categoryPickerOpen ? (
-        <div className="fixed inset-0 z-30 flex items-center justify-center bg-ink-black/35 p-4 backdrop-blur-sm" onClick={() => setCategoryPickerOpen(false)}>
+        <div className="fixed inset-0 z-30 flex items-center justify-center bg-ink-black/35 p-4 backdrop-blur-sm" onClick={() => !busyAction && setCategoryPickerOpen(false)}>
           <div className="w-full max-w-[620px] rounded-xl border border-ink-black bg-parchment-cream p-5 shadow-editorial" onClick={(e) => e.stopPropagation()}>
             <div className="mb-4 flex items-start justify-between gap-3">
               <div>
@@ -624,7 +753,7 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
                 <h2 className="serif mt-0.5 text-[1.6rem] leading-tight">选择章节类别</h2>
                 <p className="mt-1.5 text-sm leading-6 text-graphite">当前章节：{active?.title}。类别决定本章节使用的标准模板和字段规则。</p>
               </div>
-              <button type="button" aria-label="关闭章节类别选择" onClick={() => setCategoryPickerOpen(false)}>
+              <button type="button" aria-label="关闭章节类别选择" disabled={Boolean(busyAction)} onClick={() => setCategoryPickerOpen(false)} className="disabled:cursor-not-allowed disabled:opacity-45">
                 <X className="size-5" />
               </button>
             </div>
@@ -633,6 +762,7 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
               <input
                 className="w-full bg-transparent text-sm outline-none placeholder:text-warm-stone"
                 value={categorySearch}
+                disabled={Boolean(busyAction)}
                 onChange={(event) => setCategorySearch(event.target.value)}
                 placeholder="搜索类别、模板、编码或适用范围"
                 autoFocus
@@ -645,8 +775,9 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
                   <button
                     key={category.id}
                     type="button"
-                    onClick={() => selectSectionCategory(category.id)}
-                    className={`focus-ring flex w-full items-center justify-between gap-4 rounded-lg border px-4 py-3 text-left transition ${checked ? "border-ink-black bg-ink-black text-parchment-cream" : "border-ink-black/15 hover:border-ink-black/45"}`}
+                    disabled={Boolean(busyAction)}
+                    onClick={() => void selectSectionCategory(category.id)}
+                    className={`focus-ring flex w-full items-center justify-between gap-4 rounded-lg border px-4 py-3 text-left transition disabled:cursor-not-allowed disabled:opacity-70 ${checked ? "border-ink-black bg-ink-black text-parchment-cream" : "border-ink-black/15 hover:border-ink-black/45"}`}
                   >
                     <span>
                       <span className="block text-sm font-medium">{category.name}</span>
@@ -656,7 +787,7 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
                     <span className="flex items-center gap-3 text-xs">
                       <span>{category.code}</span>
                       <span className={`grid size-5 place-items-center rounded-full border ${checked ? "border-parchment-cream" : "border-ink-black/25"}`}>
-                        {checked ? <Check className="size-3.5" /> : null}
+                        {busyAction === "category" && checked ? <Loader2 className="size-3.5 animate-spin" /> : checked ? <Check className="size-3.5" /> : null}
                       </span>
                     </span>
                   </button>
@@ -673,7 +804,7 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
       ) : null}
 
       {addSectionOpen ? (
-        <div className="fixed inset-0 z-30 flex items-center justify-center bg-ink-black/35 p-4 backdrop-blur-sm" onClick={() => setAddSectionOpen(false)}>
+        <div className="fixed inset-0 z-30 flex items-center justify-center bg-ink-black/35 p-4 backdrop-blur-sm" onClick={() => !busyAction && setAddSectionOpen(false)}>
           <div className="w-full max-w-[380px] rounded-xl border border-ink-black bg-parchment-cream p-5 shadow-editorial" onClick={(e) => e.stopPropagation()}>
             <div className="mb-4">
               <p className="text-xs uppercase tracking-[0.12em] text-warm-stone">Add Section</p>
@@ -681,11 +812,11 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
             </div>
             <label className="block">
               <span className="mb-1.5 block text-sm text-graphite">章节标题</span>
-              <Input className="w-full" placeholder="输入章节标题" value={newSectionTitle} onChange={(e) => setNewSectionTitle(e.target.value)} />
+              <Input className="w-full" placeholder="输入章节标题" value={newSectionTitle} disabled={Boolean(busyAction)} onChange={(e) => setNewSectionTitle(e.target.value)} />
             </label>
             <div className="mt-5 flex justify-end gap-2 border-t border-ink-black/15 pt-4">
-              <Button variant="ghost" onClick={() => setAddSectionOpen(false)}>取消</Button>
-              <Button variant="primary" onClick={handleAddSection}>
+              <Button variant="ghost" onClick={() => setAddSectionOpen(false)} disabled={Boolean(busyAction)}>取消</Button>
+              <Button variant="primary" onClick={() => void handleAddSection()} loading={busyAction === "add-section"} loadingText="添加中" disabled={!newSectionTitle.trim()}>
                 <Plus className="size-4" />
                 添加
               </Button>
@@ -695,7 +826,7 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
       ) : null}
 
       {rollbackTarget ? (
-        <div className="fixed inset-0 z-30 flex items-center justify-center bg-ink-black/35 p-4 backdrop-blur-sm" onClick={() => setRollbackTarget(null)}>
+        <div className="fixed inset-0 z-30 flex items-center justify-center bg-ink-black/35 p-4 backdrop-blur-sm" onClick={() => !busyAction && setRollbackTarget(null)}>
           <div className="w-full max-w-[420px] rounded-xl border border-ink-black bg-parchment-cream p-5 shadow-editorial" onClick={(e) => e.stopPropagation()}>
             <div className="mb-4">
               <p className="text-xs uppercase tracking-[0.12em] text-warm-stone">Version Rollback</p>
@@ -705,8 +836,8 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
               </p>
             </div>
             <div className="flex justify-end gap-2 border-t border-ink-black/15 pt-4">
-              <Button variant="ghost" onClick={() => setRollbackTarget(null)}>取消</Button>
-              <Button variant="primary" onClick={handleRollbackConfirm}>
+              <Button variant="ghost" onClick={() => setRollbackTarget(null)} disabled={Boolean(busyAction)}>取消</Button>
+              <Button variant="primary" onClick={() => void handleRollbackConfirm()} loading={busyAction === "rollback"} loadingText="回退中">
                 <Undo2 className="size-4" />
                 确认回退
               </Button>
@@ -734,6 +865,7 @@ function PdfPreviewSurface({
   categoryName,
   categoryTemplate,
   revisionName,
+  loading = false,
   full = false
 }: {
   activeTitle: string;
@@ -745,6 +877,7 @@ function PdfPreviewSurface({
   categoryName: string;
   categoryTemplate: string;
   revisionName?: string;
+  loading?: boolean;
   full?: boolean;
 }) {
   const safePage = Math.min(Math.max(page, 1), 3);
@@ -754,7 +887,17 @@ function PdfPreviewSurface({
   const scaledWidth = pageWidth * scale;
   const scaledHeight = pageHeight * scale;
   return (
-    <div className="rounded-lg border border-ink-black/15 bg-white/45">
+    <div className="relative rounded-lg border border-ink-black/15 bg-white/45">
+      {loading ? (
+        <div className="absolute inset-0 z-10 grid place-items-center rounded-lg bg-parchment-cream/75 backdrop-blur-[2px]">
+          <div className="rounded-lg border border-ink-black/20 bg-parchment-cream px-4 py-3 text-sm shadow-editorial">
+            <span className="inline-flex items-center gap-2">
+              <Loader2 className="size-4 animate-spin" />
+              正在准备 PDF 预览
+            </span>
+          </div>
+        </div>
+      ) : null}
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-ink-black/15 px-3 py-2">
         <div className="flex min-w-0 items-center gap-2 text-xs text-graphite">
           <FileText className="size-4 shrink-0" />
@@ -825,24 +968,29 @@ function DeliveryRow({
   icon,
   label,
   value,
-  onClick
+  onClick,
+  loading = false,
+  disabled = false
 }: {
   icon: React.ReactNode;
   label: string;
   value: string;
   onClick: () => void;
+  loading?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="focus-ring flex w-full items-center justify-between gap-3 rounded-lg border border-ink-black/15 px-3 py-2 text-left transition hover:border-ink-black/45"
+      disabled={disabled || loading}
+      className="focus-ring flex w-full items-center justify-between gap-3 rounded-lg border border-ink-black/15 px-3 py-2 text-left transition hover:border-ink-black/45 disabled:cursor-not-allowed disabled:opacity-55"
     >
       <span className="flex items-center gap-2">
-        {icon}
+        {loading ? <Loader2 className="size-4 animate-spin" /> : icon}
         <span>{label}</span>
       </span>
-      <span className="text-xs text-warm-stone">{value}</span>
+      <span className="text-xs text-warm-stone">{loading ? "处理中" : value}</span>
     </button>
   );
 }

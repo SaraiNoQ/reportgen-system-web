@@ -88,3 +88,20 @@ export type ProjectMetric = {
   value: string;
   change: string;
 };
+
+export type AuthSession = {
+  token: string;
+  user: AppUser;
+  expiresAt: string;
+};
+
+export type SystemMessage = {
+  id: string;
+  title: string;
+  content: string;
+  module: "项目管理" | "原始记录上传" | "规则配置" | "报告生成" | "系统";
+  type: "成功" | "提醒" | "警告" | "失败";
+  read: boolean;
+  time: string;
+  projectId?: string;
+};

@@ -7,7 +7,7 @@ import { AppShell } from "@/components/layout/app-shell";
 export function AppShellWrapper({ children, initialCollapsed }: { children: ReactNode; initialCollapsed: boolean }) {
   const pathname = usePathname();
 
-  if (pathname === "/login") {
+  if (pathname === "/login" || pathname === "/forgot-password") {
     return <>{children}</>;
   }
 

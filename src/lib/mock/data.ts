@@ -7,7 +7,8 @@ import type {
   Project,
   RawFile,
   ReportSection,
-  RuleTemplate
+  RuleTemplate,
+  SystemMessage
 } from "@/lib/types/domain";
 
 export const projectMetrics: ProjectMetric[] = [
@@ -155,4 +156,55 @@ export const logs: OperationLog[] = [
   { id: "l3", module: "大模型解析", actor: "系统", action: "解析设备照片_01.jpg", result: "失败", time: "2024-05-20 10:31:15" },
   { id: "l4", module: "规则配置", actor: "管理员", action: "保存平面度判定规则", result: "成功", time: "2024-05-18 16:22:08" },
   { id: "l5", module: "报告生成", actor: "张工", action: "提交审核", result: "警告", time: "2024-05-20 11:20:36" }
+];
+
+export const messages: SystemMessage[] = [
+  {
+    id: "m1",
+    title: "平面度检测记录解析完成",
+    content: "必要字段 6/6 已满足报告生成条件，可进入报告生成页面继续处理。",
+    module: "原始记录上传",
+    type: "成功",
+    read: false,
+    time: "2024-05-20 10:35",
+    projectId: "p1"
+  },
+  {
+    id: "m2",
+    title: "设备照片识别失败",
+    content: "设备照片_01.jpg 未识别出检测类型，请手动选择检测类型后重新解析。",
+    module: "原始记录上传",
+    type: "警告",
+    read: false,
+    time: "2024-05-20 10:32",
+    projectId: "p1"
+  },
+  {
+    id: "m3",
+    title: "报告生成草稿已保存",
+    content: "智能制造产线项目检测报告已生成 Word/PDF 草稿，等待人工核对。",
+    module: "报告生成",
+    type: "提醒",
+    read: false,
+    time: "2024-05-20 11:18",
+    projectId: "p1"
+  },
+  {
+    id: "m4",
+    title: "规则模板版本更新",
+    content: "几何精度模板已更新到 v2.1.0，新上传记录将使用新版字段规则。",
+    module: "规则配置",
+    type: "提醒",
+    read: true,
+    time: "2024-05-18 16:22"
+  },
+  {
+    id: "m5",
+    title: "用户登录成功",
+    content: "张工已完成身份认证，系统记录本次登录日志。",
+    module: "系统",
+    type: "成功",
+    read: true,
+    time: "2024-05-20 10:05"
+  }
 ];

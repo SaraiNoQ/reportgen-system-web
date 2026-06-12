@@ -15,17 +15,20 @@ import {
   FilePlus2,
   FileSearch,
   GripVertical,
+  Loader2,
   RefreshCcw,
   Search,
   Trash2,
   UploadCloud,
   X
 } from "lucide-react";
+import { useAppContext } from "@/components/providers/app-provider";
 import { Badge, StatusDot } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, SectionHeader } from "@/components/ui/card";
 import { Input, Select } from "@/components/ui/forms";
 import { DataTable, Td } from "@/components/ui/table";
+import { recordApi } from "@/lib/services/api";
 import type { DetectedType, ExtractedField, ParseEvent, RawFile } from "@/lib/types/domain";
 import { cn } from "@/lib/utils";
 
@@ -130,6 +133,33 @@ function nowTime() {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
 }
 
+function parseClockSeconds(time: string) {
+  const match = /^(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(time.trim());
+  if (!match) return null;
+  const [, hour, minute, second = "0"] = match;
+  return Number(hour) * 3600 + Number(minute) * 60 + Number(second);
+}
+
+function getEventsStartTime(events: ParseEvent[]) {
+  return events[0]?.time ?? null;
+}
+
+function formatElapsedSeconds(seconds: number) {
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return remainder > 0 ? `${minutes}m ${remainder}s` : `${minutes}m`;
+}
+
+function getEventsElapsed(events: ParseEvent[]) {
+  if (events.length < 2) return null;
+  const start = parseClockSeconds(events[0].time);
+  const end = parseClockSeconds(events[events.length - 1].time);
+  if (start === null || end === null) return null;
+  const elapsed = end >= start ? end - start : end + 24 * 3600 - start;
+  return formatElapsedSeconds(elapsed);
+}
+
 function createId(prefix = "f") {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 7)}`;
 }
@@ -206,6 +236,7 @@ export function RecordsClient({
   events: ParseEvent[];
   fields: ExtractedField[];
 }) {
+  const { currentProject } = useAppContext();
   const [uploaded, setUploaded] = useState(files);
   const [fieldSets, setFieldSets] = useState<Record<string, ExtractedField[]>>(() =>
     Object.fromEntries(files.map((file, index) => [file.id, createFieldSet(file.id, fields, index)]))
@@ -227,16 +258,27 @@ export function RecordsClient({
   const [manualEntryFileId, setManualEntryFileId] = useState<string | null>(null);
   const [manualForm, setManualForm] = useState({ name: "", value: "" });
   const [exportToast, setExportToast] = useState(false);
+  const [exportingResults, setExportingResults] = useState(false);
   const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
+  const [directUploading, setDirectUploading] = useState(false);
+  const [uploadingQueue, setUploadingQueue] = useState(false);
   const [dragOverUpload, setDragOverUpload] = useState(false);
   const [draggingQueueId, setDraggingQueueId] = useState<string | null>(null);
   const [queueDropMarker, setQueueDropMarker] = useState<DropMarker | null>(null);
   const [previewAssets, setPreviewAssets] = useState<Record<string, PreviewAsset>>({});
   const [previewingAsset, setPreviewingAsset] = useState<PreviewAsset | null>(null);
+  const [previewingFileId, setPreviewingFileId] = useState<string | null>(null);
+  const [retryingFileIds, setRetryingFileIds] = useState<Set<string>>(() => new Set());
+  const [retryingAllFailed, setRetryingAllFailed] = useState(false);
+  const [savingField, setSavingField] = useState(false);
+  const [updatingTypeFileId, setUpdatingTypeFileId] = useState<string | null>(null);
+  const [savingManualEntry, setSavingManualEntry] = useState(false);
+  const [deletingFileIds, setDeletingFileIds] = useState<Set<string>>(() => new Set());
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const uploadQueueListRef = useRef<HTMLDivElement | null>(null);
   const scheduledRef = useRef<Set<string>>(new Set());
+  const syncedParseEventsRef = useRef<Set<string>>(new Set());
   const previewAssetsRef = useRef(previewAssets);
   const uploadQueueRef = useRef(uploadQueue);
 
@@ -262,6 +304,9 @@ export function RecordsClient({
   const activeParseEvents = activeParseFile ? parseEventSets[activeParseFile.id] ?? [] : [];
   const activeParseIndex = activeParseFile ? Math.max(0, uploaded.findIndex((file) => file.id === activeParseFile.id)) : -1;
   const activeParseProgress = activeParseFile?.parseStatus === "解析成功" ? 100 : activeParseFile?.parseStatus === "解析失败" ? 38 : parseProgress;
+  const activeParseStartTime = getEventsStartTime(activeParseEvents) ?? parseStartTime;
+  const activeParseElapsed = getEventsElapsed(activeParseEvents);
+  const queueReady = uploadQueue.length > 0 && uploadQueue.every((item) => item.progress >= 100);
 
   const steps = useMemo(() => {
     if (totalFiles === 0) return [
@@ -322,6 +367,40 @@ export function RecordsClient({
   }, [uploadQueue]);
 
   useEffect(() => {
+    const fileIds = uploaded.map((file) => file.id).filter((fileId) => !syncedParseEventsRef.current.has(fileId));
+    if (fileIds.length === 0) return;
+
+    let cancelled = false;
+
+    void Promise.all(
+      fileIds.map(async (fileId) => {
+        try {
+          const events = await recordApi.fileParseEvents(fileId);
+          return events.length > 0 ? { fileId, events } : null;
+        } catch {
+          return null;
+        }
+      })
+    ).then((results) => {
+      if (cancelled) return;
+      const syncedEvents = results.filter((result): result is { fileId: string; events: ParseEvent[] } => Boolean(result));
+      if (syncedEvents.length === 0) return;
+      setParseEventSets((current) => {
+        const next = { ...current };
+        syncedEvents.forEach(({ fileId, events }) => {
+          syncedParseEventsRef.current.add(fileId);
+          next[fileId] = events;
+        });
+        return next;
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [uploaded]);
+
+  useEffect(() => {
     return () => {
       Object.values(previewAssetsRef.current).forEach((asset) => {
         if (asset.url) URL.revokeObjectURL(asset.url);
@@ -375,7 +454,9 @@ export function RecordsClient({
     }
   }, [activeCount, successCount, parseStartTime]);
 
-  const retryFile = useCallback((fileId: string) => {
+  const retryFile = useCallback(async (fileId: string) => {
+    if (retryingFileIds.has(fileId)) return;
+    setRetryingFileIds((current) => new Set(current).add(fileId));
     setUploaded((current) =>
       current.map((file) => (file.id === fileId ? { ...file, parseStatus: "解析中" as const } : file))
     );
@@ -388,9 +469,22 @@ export function RecordsClient({
     }));
     setActiveParseFileId(fileId);
     setNotice("失败文件已重新进入解析队列，系统将保留原失败日志用于追溯。");
-  }, []);
+    try {
+      await recordApi.updateFileStatus(fileId, "解析中");
+    } catch {
+      setNotice("解析重试接口暂不可用，已先在当前页面重新入队。");
+    } finally {
+      setRetryingFileIds((current) => {
+        const next = new Set(current);
+        next.delete(fileId);
+        return next;
+      });
+    }
+  }, [retryingFileIds]);
 
-  const retryAllFailed = useCallback(() => {
+  const retryAllFailed = useCallback(async () => {
+    if (retryingAllFailed || failedFiles.length === 0) return;
+    setRetryingAllFailed(true);
     setUploaded((current) =>
       current.map((file) => (file.parseStatus === "解析失败" ? { ...file, parseStatus: "解析中" as const } : file))
     );
@@ -402,7 +496,14 @@ export function RecordsClient({
       return next;
     });
     setNotice("全部失败文件已重新进入解析队列。");
-  }, [failedFiles]);
+    try {
+      await Promise.all(failedFiles.map((file) => recordApi.updateFileStatus(file.id, "解析中")));
+    } catch {
+      setNotice("批量重试接口暂不可用，已先在当前页面重新入队。");
+    } finally {
+      setRetryingAllFailed(false);
+    }
+  }, [failedFiles, retryingAllFailed]);
 
   function openFieldEditor(field: ExtractedField) {
     setActiveFieldId(field.id);
@@ -419,8 +520,9 @@ export function RecordsClient({
     });
   }
 
-  function saveActiveField() {
-    if (!activeFieldId) return;
+  async function saveActiveField() {
+    if (!activeFieldId || savingField) return;
+    setSavingField(true);
     setFieldSets((current) => ({
       ...current,
       [activePreviewFileId]: (current[activePreviewFileId] ?? []).map((field) =>
@@ -428,7 +530,14 @@ export function RecordsClient({
       )
     }));
     setNotice("字段值已由人工修正，来源将标记为人工校核。");
-    setActiveFieldId(null);
+    try {
+      await recordApi.updateField(activePreviewFileId, activeFieldId, draftValue);
+    } catch {
+      setNotice("字段保存接口暂不可用，已先保存在当前页面。");
+    } finally {
+      setSavingField(false);
+      setActiveFieldId(null);
+    }
   }
 
   function updateFieldValue(fieldId: string, value: string) {
@@ -440,13 +549,22 @@ export function RecordsClient({
     }));
   }
 
-  function updateFileType(fileId: string, detectedType: DetectedType) {
+  async function updateFileType(fileId: string, detectedType: DetectedType) {
+    if (updatingTypeFileId) return;
+    setUpdatingTypeFileId(fileId);
     setUploaded((current) =>
       current.map((file) => (file.id === fileId ? { ...file, detectedType, typeConfirmed: true } : file))
     );
-    setEditingTypeFileId(null);
-    setTypeSearch("");
     setNotice("检测类型已人工调整为 " + detectedType + "，来源标记为人工确认。");
+    try {
+      await recordApi.updateFileType(fileId, detectedType);
+    } catch {
+      setNotice("检测类型接口暂不可用，已先保存在当前页面。");
+    } finally {
+      setUpdatingTypeFileId(null);
+      setEditingTypeFileId(null);
+      setTypeSearch("");
+    }
   }
 
   function openManualEntry(fileId: string) {
@@ -455,8 +573,9 @@ export function RecordsClient({
     setManualEntryOpen(true);
   }
 
-  function submitManualEntry() {
-    if (!manualForm.name.trim() || !manualForm.value.trim()) return;
+  async function submitManualEntry() {
+    if (!manualForm.name.trim() || !manualForm.value.trim() || savingManualEntry) return;
+    setSavingManualEntry(true);
     const targetFileId = manualEntryFileId ?? activePreviewFileId;
     setFieldSets((current) => ({
       ...current,
@@ -471,9 +590,16 @@ export function RecordsClient({
       );
       setActivePreviewFileId(manualEntryFileId);
     }
-    setManualEntryOpen(false);
-    setManualEntryFileId(null);
     setNotice(`已手动录入字段「${manualForm.name}」，文件状态更新为解析成功。`);
+    try {
+      await recordApi.addManualField(targetFileId, manualForm.name.trim(), manualForm.value.trim());
+    } catch {
+      setNotice("手动录入接口暂不可用，已先保存在当前页面。");
+    } finally {
+      setSavingManualEntry(false);
+      setManualEntryOpen(false);
+      setManualEntryFileId(null);
+    }
   }
 
   function createQueueItems(selectedFiles: File[]) {
@@ -491,10 +617,10 @@ export function RecordsClient({
     }));
   }
 
-  function commitUploads(items: UploadQueueItem[]) {
+  async function commitUploads(items: UploadQueueItem[]) {
     const now = new Date();
     const uploadTime = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")} ${nowTime().slice(0, 5)}`;
-    const newFiles: RawFile[] = items.map((item) => ({
+    let newFiles: RawFile[] = items.map((item) => ({
       id: createId("f"),
       name: item.name,
       type: item.type,
@@ -504,19 +630,37 @@ export function RecordsClient({
       detectedType: item.detectedType,
       typeConfirmed: false
     }));
+    let apiFields: Record<string, ExtractedField[]> | null = null;
+    let apiEvents: Record<string, ParseEvent[]> | null = null;
+
+    try {
+      const response = await recordApi.uploadFiles(
+        items.map((item) => ({
+          name: item.name,
+          type: item.type,
+          size: item.size,
+          detectedType: item.detectedType
+        }))
+      );
+      newFiles = response.files;
+      apiFields = response.fields;
+      apiEvents = response.parseEvents;
+    } catch {
+      setNotice("后端上传接口暂不可用，已先使用本地队列继续演示。");
+    }
 
     setUploaded((current) => [...current, ...newFiles]);
     setFieldSets((current) => {
       const next = { ...current };
       newFiles.forEach((file, index) => {
-        next[file.id] = createFieldSet(file.id, fields, uploaded.length + index);
+        next[file.id] = apiFields?.[file.id] ?? createFieldSet(file.id, fields, uploaded.length + index);
       });
       return next;
     });
     setParseEventSets((current) => {
       const next = { ...current };
       newFiles.forEach((file) => {
-        next[file.id] = createParseEvents(file);
+        next[file.id] = apiEvents?.[file.id] ?? createParseEvents(file);
       });
       return next;
     });
@@ -550,7 +694,8 @@ export function RecordsClient({
     );
   }
 
-  function handleSelectedFiles(fileList: FileList | File[]) {
+  async function handleSelectedFiles(fileList: FileList | File[]) {
+    if (directUploading || uploadingQueue) return;
     const selectedFiles = Array.from(fileList);
     if (selectedFiles.length === 0) return;
     const queueItems = createQueueItems(selectedFiles);
@@ -560,7 +705,12 @@ export function RecordsClient({
       return;
     }
     if (queueItems.length === 1) {
-      commitUploads(queueItems);
+      setDirectUploading(true);
+      try {
+        await commitUploads(queueItems);
+      } finally {
+        setDirectUploading(false);
+      }
       setNotice(`${queueItems[0].name} 上传进度 100%，文件校验通过并已进入解析队列。`);
       return;
     }
@@ -595,14 +745,27 @@ export function RecordsClient({
     });
   }
 
-  function confirmBatchUpload() {
+  async function confirmBatchUpload() {
+    if (!queueReady || uploadingQueue) return;
+    setUploadingQueue(true);
     const readyItems = uploadQueue.map((item) => ({ ...item, progress: 100 }));
-    commitUploads(readyItems);
-    setUploadQueue([]);
-    setUploadModalOpen(false);
+    try {
+      await commitUploads(readyItems);
+      setUploadQueue([]);
+      setUploadModalOpen(false);
+    } finally {
+      setUploadingQueue(false);
+    }
   }
 
-  function deleteFile(fileId: string) {
+  async function deleteFile(fileId: string) {
+    if (deletingFileIds.has(fileId)) return;
+    setDeletingFileIds((current) => new Set(current).add(fileId));
+    try {
+      await recordApi.deleteFile(fileId);
+    } catch {
+      setNotice("删除接口暂不可用，已先从当前页面移除。");
+    }
     setUploaded((current) => current.filter((file) => file.id !== fileId));
     setFieldSets((current) => {
       const next = { ...current };
@@ -621,9 +784,15 @@ export function RecordsClient({
       return next;
     });
     setNotice("已模拟删除未锁定文件，并写入操作日志。");
+    setDeletingFileIds((current) => {
+      const next = new Set(current);
+      next.delete(fileId);
+      return next;
+    });
   }
 
   function cancelBatchUpload() {
+    if (uploadingQueue) return;
     uploadQueue.forEach((item) => URL.revokeObjectURL(item.previewUrl));
     setUploadModalOpen(false);
     setUploadQueue([]);
@@ -639,7 +808,13 @@ export function RecordsClient({
       size: file.size
     };
     setPreviewingAsset(asset);
+    setPreviewingFileId(file.id);
     setNotice(`${file.name} 已打开预览。`);
+    void recordApi
+      .previewFile(file.id)
+      .then((response) => setNotice(response.message))
+      .catch(() => undefined)
+      .finally(() => setPreviewingFileId(null));
   }
 
   function openQueuePreview(item: UploadQueueItem) {
@@ -654,6 +829,23 @@ export function RecordsClient({
     setNotice(`${item.name} 已打开上传前预览。`);
   }
 
+  async function handleExportResults() {
+    if (exportingResults) return;
+    setExportingResults(true);
+    setExportToast(false);
+    setNotice("正在准备解析结果导出文件...");
+    try {
+      const response = await recordApi.exportResults();
+      setNotice(`已导出解析结果：${response.fileName}。`);
+      setExportToast(true);
+      setTimeout(() => setExportToast(false), 2500);
+    } catch {
+      setNotice("解析结果导出接口暂不可用，请确认 Core API 服务状态。");
+    } finally {
+      setExportingResults(false);
+    }
+  }
+
   return (
     <>
       <SectionHeader
@@ -661,16 +853,23 @@ export function RecordsClient({
         title="原始记录上传"
         action={
           <div className="flex flex-wrap items-center gap-2">
-            <Button variant="secondary" onClick={() => { setExportToast(true); setTimeout(() => setExportToast(false), 2500); setNotice("已导出解析结果：Excel / JSON / 内部数据包。"); }}>
+            <Button variant="secondary" onClick={handleExportResults} loading={exportingResults} loadingText="导出中">
               <Download className="size-4" />
               导出结果
             </Button>
-            <Link href="/reports">
-              <Button variant="primary" disabled={!generateReady}>
+            {generateReady ? (
+              <Link href="/reports">
+                <Button variant="primary">
+                  生成报告
+                  <ArrowRight className="size-4" />
+                </Button>
+              </Link>
+            ) : (
+              <Button variant="primary" disabled loading={activeCount > 0} loadingText="解析中">
                 生成报告
                 <ArrowRight className="size-4" />
               </Button>
-            </Link>
+            )}
           </div>
         }
       />
@@ -713,7 +912,7 @@ export function RecordsClient({
                 onDrop={(event) => {
                   event.preventDefault();
                   setDragOverUpload(false);
-                  handleSelectedFiles(event.dataTransfer.files);
+                  void handleSelectedFiles(event.dataTransfer.files);
                 }}
               >
                 <UploadCloud className="mb-3 size-7" />
@@ -728,12 +927,12 @@ export function RecordsClient({
                   className="hidden"
                   accept=".pdf,.jpg,.jpeg,.png,.doc,.docx,.xls,.xlsx"
                   onChange={(event) => {
-                    if (event.target.files) handleSelectedFiles(event.target.files);
+                    if (event.target.files) void handleSelectedFiles(event.target.files);
                     event.target.value = "";
                   }}
                 />
                 <div className="mt-auto flex flex-wrap gap-2 pt-4">
-                  <Button variant="primary" onClick={() => fileInputRef.current?.click()}>
+                  <Button variant="primary" onClick={() => fileInputRef.current?.click()} loading={directUploading} loadingText="上传中" disabled={uploadingQueue}>
                     <FilePlus2 className="size-4" />
                     上传文件
                   </Button>
@@ -745,7 +944,7 @@ export function RecordsClient({
 
               <div className="flex h-full flex-col rounded-lg border border-ink-black/14 p-3">
                 <p className="text-xs uppercase tracking-[0.12em] text-warm-stone">当前项目</p>
-                <p className="mt-2 font-medium">智能制造产线项目</p>
+                <p className="mt-2 font-medium">{currentProject?.name ?? "未选择项目"}</p>
                 <div className="mt-3 grid grid-cols-3 gap-2 text-center text-xs">
                   <div className="rounded-md border border-ink-black/12 p-2">
                     <p className="text-lg font-medium">{uploaded.length}</p>
@@ -823,28 +1022,31 @@ export function RecordsClient({
                       <button
                         type="button"
                         title="预览文件"
+                        disabled={previewingFileId === file.id}
                         onClick={() => openUploadedPreview(file)}
-                        className="rounded-md p-1.5 text-warm-stone hover:bg-ink-black/10 hover:text-ink-black transition"
+                        className="rounded-md p-1.5 text-warm-stone transition hover:bg-ink-black/10 hover:text-ink-black disabled:cursor-not-allowed disabled:opacity-45"
                       >
-                        <FileSearch className="size-4" />
+                        {previewingFileId === file.id ? <Loader2 className="size-4 animate-spin" /> : <FileSearch className="size-4" />}
                       </button>
                       {file.parseStatus === "解析失败" ? (
                         <button
                           type="button"
                           title="重试解析"
-                          onClick={() => retryFile(file.id)}
-                          className="rounded-md p-1.5 text-warm-stone hover:bg-ink-black/10 hover:text-ink-black transition"
+                          disabled={retryingFileIds.has(file.id) || retryingAllFailed}
+                          onClick={() => void retryFile(file.id)}
+                          className="rounded-md p-1.5 text-warm-stone transition hover:bg-ink-black/10 hover:text-ink-black disabled:cursor-not-allowed disabled:opacity-45"
                         >
-                          <RefreshCcw className="size-4" />
+                          {retryingFileIds.has(file.id) ? <Loader2 className="size-4 animate-spin" /> : <RefreshCcw className="size-4" />}
                         </button>
                       ) : null}
                       <button
                         type="button"
                         title="删除文件"
-                        onClick={() => deleteFile(file.id)}
-                        className="rounded-md p-1.5 text-warm-stone hover:bg-ink-black/10 hover:text-ink-black transition"
+                        disabled={deletingFileIds.has(file.id)}
+                        onClick={() => void deleteFile(file.id)}
+                        className="rounded-md p-1.5 text-warm-stone transition hover:bg-ink-black/10 hover:text-ink-black disabled:cursor-not-allowed disabled:opacity-45"
                       >
-                        <Trash2 className="size-4" />
+                        {deletingFileIds.has(file.id) ? <Loader2 className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
                       </button>
                     </div>
                   </Td>
@@ -862,7 +1064,7 @@ export function RecordsClient({
               <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
                 <div className="rounded-md border border-ink-black/12 p-2">
                   <p className="text-warm-stone">开始</p>
-                  <p className="mt-1">{parseStartTime ?? "--:--:--"}</p>
+                  <p className="mt-1">{activeParseStartTime ?? "--:--:--"}</p>
                 </div>
                 <div className="rounded-md border border-ink-black/12 p-2">
                   <p className="text-warm-stone">预计</p>
@@ -870,7 +1072,7 @@ export function RecordsClient({
                 </div>
                 <div className="rounded-md border border-ink-black/12 p-2">
                   <p className="text-warm-stone">已耗时</p>
-                  <p className="mt-1">{parseStartTime ? `${Math.floor((successCount + failedFiles.length) * 0.7)}s` : "--"}</p>
+                  <p className="mt-1">{activeParseElapsed ?? (activeParseStartTime ? "计算中" : "--")}</p>
                 </div>
               </div>
               <div className="mt-3 grid min-h-[230px] gap-3 md:grid-cols-[190px_minmax(0,1fr)]">
@@ -908,11 +1110,13 @@ export function RecordsClient({
                     </div>
                     {activeParseFile ? <Badge tone={getTone(activeParseFile.parseStatus)}>{activeParseFile.parseStatus}</Badge> : null}
                   </div>
-                  <div className="relative max-h-44 space-y-0 overflow-y-auto pr-1">
-                    <div className="absolute bottom-3 left-2 top-3 w-px bg-ink-black/18" />
+                  <div className="relative max-h-44 overflow-y-auto pr-1">
                     {activeParseEvents.map((event, index) => (
-                      <div key={`${event.time}-${event.label}-${index}`} className="relative flex gap-3 pb-3 last:pb-0">
-                        <span className="relative z-10 mt-1 grid size-4 shrink-0 place-items-center rounded-full bg-parchment-cream">
+                      <div key={`${event.time}-${event.label}-${index}`} className="relative grid grid-cols-[20px_minmax(0,1fr)] gap-3 pb-3 last:pb-0">
+                        {index < activeParseEvents.length - 1 ? (
+                          <span className="absolute bottom-0 left-[7.5px] top-6 w-px bg-ink-black/18" />
+                        ) : null}
+                        <span className="relative z-10 mt-1 grid size-4 place-items-center rounded-full bg-parchment-cream">
                           <StatusDot tone={event.state === "done" ? "success" : event.state === "active" ? "active" : "neutral"} />
                         </span>
                         <div className="min-w-0 rounded-md border border-ink-black/10 bg-parchment-cream/45 px-2.5 py-2">
@@ -950,11 +1154,11 @@ export function RecordsClient({
                     {failedFiles[0].name}：图片模糊，表格边界无法识别。建议重新上传清晰文件、手动录入关键数据或联系管理员。
                   </p>
                   <div className="mt-3 flex flex-wrap gap-2">
-                    <Button variant="danger" onClick={retryAllFailed}>
+                    <Button variant="danger" onClick={() => void retryAllFailed()} loading={retryingAllFailed} loadingText="重试中">
                       <RefreshCcw className="size-4" />
                       重试解析
                     </Button>
-                    <Button variant="secondary" onClick={() => openManualEntry(failedFiles[0].id)}>
+                    <Button variant="secondary" onClick={() => openManualEntry(failedFiles[0].id)} disabled={retryingAllFailed}>
                       手动录入
                     </Button>
                   </div>
@@ -1046,8 +1250,8 @@ export function RecordsClient({
                 </div>
                 <Input className="mt-3 w-full" value={draftValue} onChange={(event) => setDraftValue(event.target.value)} />
                 <div className="mt-3 flex justify-end gap-2">
-                  <Button variant="ghost" onClick={() => setActiveFieldId(null)}>取消</Button>
-                  <Button variant="primary" onClick={saveActiveField}>
+                  <Button variant="ghost" onClick={() => setActiveFieldId(null)} disabled={savingField}>取消</Button>
+                  <Button variant="primary" onClick={() => void saveActiveField()} loading={savingField} loadingText="保存中">
                     <Edit3 className="size-4" />
                     保存
                   </Button>
@@ -1064,13 +1268,13 @@ export function RecordsClient({
             className="flex max-h-[82vh] w-full max-w-[760px] flex-col rounded-xl border border-ink-black bg-parchment-cream p-4 shadow-editorial"
             onClick={(event) => event.stopPropagation()}
             onDragOver={(event) => {
-              if (!draggingQueueId) return;
+              if (!draggingQueueId || uploadingQueue) return;
               event.preventDefault();
               event.dataTransfer.dropEffect = "move";
               setQueueDropMarker(getQueueDropMarker(uploadQueueListRef.current, event.clientY, draggingQueueId));
             }}
             onDrop={(event) => {
-              if (!draggingQueueId) return;
+              if (!draggingQueueId || uploadingQueue) return;
               event.preventDefault();
               const marker = queueDropMarker ?? getQueueDropMarker(uploadQueueListRef.current, event.clientY, draggingQueueId);
               if (marker) {
@@ -1086,7 +1290,7 @@ export function RecordsClient({
                 <h2 className="serif text-[1.8rem] leading-tight">批量上传顺序确认</h2>
                 <p className="mt-1 text-sm text-graphite">拖动文件调整顺序，该顺序将用于后续报告章节和附件排序。</p>
               </div>
-              <button type="button" aria-label="关闭批量上传" onClick={cancelBatchUpload} className="shrink-0">
+              <button type="button" aria-label="关闭批量上传" disabled={uploadingQueue} onClick={cancelBatchUpload} className="shrink-0 disabled:cursor-not-allowed disabled:opacity-45">
                 <X className="size-5" />
               </button>
             </div>
@@ -1112,6 +1316,10 @@ export function RecordsClient({
                         data-queue-item-id={item.id}
                         onDragStart={(event) => {
                           const target = event.target;
+                          if (uploadingQueue) {
+                            event.preventDefault();
+                            return;
+                          }
                           if (!(target instanceof Element) || !target.closest('[data-queue-drag-handle="true"]')) {
                             event.preventDefault();
                             return;
@@ -1135,7 +1343,7 @@ export function RecordsClient({
                           draggable
                           data-queue-drag-handle="true"
                           title="拖动调整顺序"
-                          className="flex cursor-grab items-center justify-center text-warm-stone active:cursor-grabbing"
+                          className={cn("flex items-center justify-center text-warm-stone", uploadingQueue ? "cursor-not-allowed opacity-45" : "cursor-grab active:cursor-grabbing")}
                         >
                           <GripVertical className="size-4" />
                         </div>
@@ -1146,6 +1354,7 @@ export function RecordsClient({
                           <div className="relative">
                             <Input
                               value={item.name}
+                              disabled={uploadingQueue}
                               onChange={(event) => updateQueueName(item.id, event.target.value)}
                               className="w-full pr-8"
                               aria-label={`${item.originalName} 文件名`}
@@ -1155,12 +1364,13 @@ export function RecordsClient({
                                 type="button"
                                 aria-label="清空文件名"
                                 title="清空文件名"
+                                disabled={uploadingQueue}
                                 onMouseDown={(event) => event.preventDefault()}
                                 onClick={(event) => {
                                   updateQueueName(item.id, "");
                                   event.currentTarget.parentElement?.querySelector("input")?.focus();
                                 }}
-                                className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-1 text-warm-stone transition hover:bg-ink-black/10 hover:text-ink-black"
+                                className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-1 text-warm-stone transition hover:bg-ink-black/10 hover:text-ink-black disabled:cursor-not-allowed disabled:opacity-45"
                               >
                                 <X className="size-3.5" />
                               </button>
@@ -1182,16 +1392,18 @@ export function RecordsClient({
                           <button
                             type="button"
                             title="预览文件"
+                            disabled={uploadingQueue}
                             onClick={() => openQueuePreview(item)}
-                            className="rounded-md p-1.5 text-warm-stone transition hover:bg-ink-black/10 hover:text-ink-black"
+                            className="rounded-md p-1.5 text-warm-stone transition hover:bg-ink-black/10 hover:text-ink-black disabled:cursor-not-allowed disabled:opacity-45"
                           >
                             <Eye className="size-4" />
                           </button>
                           <button
                             type="button"
                             title="删除文件"
+                            disabled={uploadingQueue}
                             onClick={() => deleteQueueItem(item.id)}
-                            className="rounded-md p-1.5 text-warm-stone transition hover:bg-ink-black/10 hover:text-ink-black"
+                            className="rounded-md p-1.5 text-warm-stone transition hover:bg-ink-black/10 hover:text-ink-black disabled:cursor-not-allowed disabled:opacity-45"
                           >
                             <Trash2 className="size-4" />
                           </button>
@@ -1207,19 +1419,28 @@ export function RecordsClient({
             </div>
 
             <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-ink-black/15 pt-3">
-              <p className="text-xs leading-5 text-warm-stone">共 {uploadQueue.length} 个文件。删除后不会进入解析队列，改名仅影响当前项目内记录名称。</p>
+              <p className="text-xs leading-5 text-warm-stone">
+                共 {uploadQueue.length} 个文件。{queueReady ? "上传校验完成，可以开始解析。" : "等待文件上传进度达到 100% 后才能开始解析。"}
+              </p>
               <div className="flex gap-2">
-                <Button variant="secondary" onClick={() => fileInputRef.current?.click()}>
+                <Button variant="secondary" onClick={() => fileInputRef.current?.click()} disabled={uploadingQueue}>
                   <FilePlus2 className="size-4" />
                   继续添加
                 </Button>
                 <Button
                   variant="ghost"
                   onClick={cancelBatchUpload}
+                  disabled={uploadingQueue}
                 >
                   取消
                 </Button>
-                <Button variant="primary" onClick={confirmBatchUpload} disabled={uploadQueue.length === 0}>
+                <Button
+                  variant="primary"
+                  onClick={() => void confirmBatchUpload()}
+                  disabled={!queueReady}
+                  loading={uploadingQueue}
+                  loadingText="提交中"
+                >
                   开始解析
                   <ArrowRight className="size-4" />
                 </Button>
@@ -1273,6 +1494,7 @@ export function RecordsClient({
         <div
           className="fixed inset-0 z-30 flex items-center justify-center bg-ink-black/35 p-4 backdrop-blur-sm"
           onClick={() => {
+            if (updatingTypeFileId) return;
             setEditingTypeFileId(null);
             setTypeSearch("");
           }}
@@ -1293,10 +1515,12 @@ export function RecordsClient({
                 type="button"
                 aria-label="关闭检测类型选择"
                 onClick={() => {
+                  if (updatingTypeFileId) return;
                   setEditingTypeFileId(null);
                   setTypeSearch("");
                 }}
-                className="shrink-0"
+                disabled={Boolean(updatingTypeFileId)}
+                className="shrink-0 disabled:cursor-not-allowed disabled:opacity-45"
               >
                 <X className="size-5" />
               </button>
@@ -1318,9 +1542,11 @@ export function RecordsClient({
                   <button
                     key={option.id}
                     type="button"
-                    onClick={() => updateFileType(editingFile.id, option.id)}
+                    disabled={Boolean(updatingTypeFileId)}
+                    onClick={() => void updateFileType(editingFile.id, option.id)}
                     className={cn(
                       "focus-ring flex w-full items-center justify-between gap-4 rounded-lg border px-4 py-3 text-left transition",
+                      updatingTypeFileId && "cursor-not-allowed opacity-70",
                       checked
                         ? "border-ink-black bg-ink-black text-parchment-cream"
                         : "border-ink-black/15 hover:border-ink-black/45"
@@ -1334,7 +1560,7 @@ export function RecordsClient({
                     <span className="flex shrink-0 items-center gap-3 text-xs">
                       <span>{option.code}</span>
                       <span className={cn("grid size-5 place-items-center rounded-full border", checked ? "border-parchment-cream" : "border-ink-black/25")}>
-                        {checked ? <CheckCircle2 className="size-3.5" /> : null}
+                        {updatingTypeFileId === editingFile.id && checked ? <Loader2 className="size-3.5 animate-spin" /> : checked ? <CheckCircle2 className="size-3.5" /> : null}
                       </span>
                     </span>
                   </button>
@@ -1351,7 +1577,7 @@ export function RecordsClient({
       ) : null}
 
       {manualEntryOpen ? (
-        <div className="fixed inset-0 z-30 flex items-center justify-center bg-ink-black/35 p-4 backdrop-blur-sm" onClick={() => setManualEntryOpen(false)}>
+        <div className="fixed inset-0 z-30 flex items-center justify-center bg-ink-black/35 p-4 backdrop-blur-sm" onClick={() => !savingManualEntry && setManualEntryOpen(false)}>
           <div className="w-full max-w-[420px] rounded-xl border border-ink-black bg-parchment-cream p-5 shadow-editorial" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-start justify-between gap-3 border-b border-ink-black/15 pb-3">
               <div>
@@ -1359,14 +1585,14 @@ export function RecordsClient({
                 <h2 className="serif text-[1.5rem] leading-tight mt-0.5">手动录入关键数据</h2>
                 <p className="mt-1 text-sm text-graphite">录入数据将标记来源为人工录入，文件状态更新为解析成功。</p>
               </div>
-              <button type="button" aria-label="关闭" onClick={() => setManualEntryOpen(false)} className="shrink-0">
+              <button type="button" aria-label="关闭" disabled={savingManualEntry} onClick={() => setManualEntryOpen(false)} className="shrink-0 disabled:cursor-not-allowed disabled:opacity-45">
                 <X className="size-5" />
               </button>
             </div>
             <div className="mt-4 space-y-4">
               <label className="block">
                 <span className="mb-1.5 block text-sm text-graphite">字段名称</span>
-                <Select className="w-full" value={manualForm.name} onChange={(e) => setManualForm((f) => ({ ...f, name: e.target.value }))}>
+                <Select className="w-full" value={manualForm.name} disabled={savingManualEntry} onChange={(e) => setManualForm((f) => ({ ...f, name: e.target.value }))}>
                   <option value="">选择字段名称</option>
                   <option>检验项目</option>
                   <option>测量位置</option>
@@ -1379,12 +1605,18 @@ export function RecordsClient({
               </label>
               <label className="block">
                 <span className="mb-1.5 block text-sm text-graphite">字段值</span>
-                <Input className="w-full" placeholder="输入字段值" value={manualForm.value} onChange={(e) => setManualForm((f) => ({ ...f, value: e.target.value }))} />
+                <Input className="w-full" placeholder="输入字段值" value={manualForm.value} disabled={savingManualEntry} onChange={(e) => setManualForm((f) => ({ ...f, value: e.target.value }))} />
               </label>
             </div>
             <div className="mt-5 flex justify-end gap-2 border-t border-ink-black/15 pt-4">
-              <Button variant="ghost" onClick={() => setManualEntryOpen(false)}>取消</Button>
-              <Button variant="primary" onClick={submitManualEntry}>
+              <Button variant="ghost" onClick={() => setManualEntryOpen(false)} disabled={savingManualEntry}>取消</Button>
+              <Button
+                variant="primary"
+                onClick={() => void submitManualEntry()}
+                disabled={!manualForm.name.trim() || !manualForm.value.trim()}
+                loading={savingManualEntry}
+                loadingText="录入中"
+              >
                 <Edit3 className="size-4" />
                 确认录入
               </Button>

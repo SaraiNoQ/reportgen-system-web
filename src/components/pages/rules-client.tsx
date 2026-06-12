@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, SectionHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/forms";
 import { DataTable, Td } from "@/components/ui/table";
+import { ruleApi } from "@/lib/services/api";
 import type { RuleField, RuleTemplate } from "@/lib/types/domain";
 
 export function RulesClient({ templates }: { templates: RuleTemplate[] }) {
@@ -14,9 +15,24 @@ export function RulesClient({ templates }: { templates: RuleTemplate[] }) {
   const [selectedFieldId, setSelectedFieldId] = useState(templates[0]?.fields[2]?.id ?? "");
   const [tab, setTab] = useState("判定规则");
   const [toast, setToast] = useState("");
+  const [savingRule, setSavingRule] = useState(false);
 
   const template = useMemo(() => templates.find((item) => item.id === selectedTemplateId) ?? templates[0], [selectedTemplateId, templates]);
   const field: RuleField | undefined = template.fields.find((item) => item.id === selectedFieldId) ?? template.fields[0];
+
+  async function handleSaveRule() {
+    if (savingRule) return;
+    setSavingRule(true);
+    setToast("正在保存规则...");
+    try {
+      const response = await ruleApi.saveRule();
+      setToast(response.message);
+    } catch {
+      setToast("规则保存接口暂不可用，请确认 Core API 服务状态。");
+    } finally {
+      setSavingRule(false);
+    }
+  }
 
   return (
     <>
@@ -136,7 +152,7 @@ export function RulesClient({ templates }: { templates: RuleTemplate[] }) {
               (实测值 - 标准值) / 标准值 * 100
             </div>
           </div>
-          <Button className="mt-5 w-full" variant="primary" onClick={() => setToast("规则已保存，并记录版本变更")}>
+          <Button className="mt-5 w-full" variant="primary" onClick={handleSaveRule} loading={savingRule} loadingText="保存中">
             <Save className="size-4" />
             保存规则
           </Button>

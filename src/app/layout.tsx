@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { cookies } from "next/headers";
 import { AppShellWrapper } from "@/components/layout/app-shell-wrapper";
+import { AppProvider } from "@/components/providers/app-provider";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -19,9 +20,11 @@ export default async function RootLayout({
   return (
     <html lang="zh-CN">
       <body>
-        <AppShellWrapper initialCollapsed={initialCollapsed}>
-          {children}
-        </AppShellWrapper>
+        <AppProvider>
+          <AppShellWrapper initialCollapsed={initialCollapsed}>
+            {children}
+          </AppShellWrapper>
+        </AppProvider>
       </body>
     </html>
   );

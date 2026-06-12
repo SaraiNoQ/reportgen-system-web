@@ -1,66 +1,115 @@
+"use client";
+
 import Link from "next/link";
-import { ArrowRight, LockKeyhole, UserRound } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { useState } from "react";
+import { ArrowRight, Eye, EyeOff, LockKeyhole, UserRound } from "lucide-react";
+import { AuthLayout } from "@/components/pages/auth-layout";
+import { useAppContext } from "@/components/providers/app-provider";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/forms";
+import { authApi } from "@/lib/services/api";
 
 export default function LoginPage() {
+  const router = useRouter();
+  const { login } = useAppContext();
+  const [username, setUsername] = useState("zhanggong");
+  const [password, setPassword] = useState("report-demo");
+  const [showPassword, setShowPassword] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  async function handleLogin() {
+    setSubmitting(true);
+    setError("");
+    try {
+      const session = await authApi.login(username, password);
+      login(session);
+      router.push("/records");
+    } catch {
+      setError("登录失败，请检查 Core API 或账号信息。");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   return (
-    <main className="grid min-h-screen place-items-center px-5 py-10">
-      <div className="grid w-full max-w-5xl gap-6 lg:grid-cols-[1fr_360px]">
-        <section className="flex flex-col justify-center">
-          <p className="mb-5 text-xs uppercase tracking-[0.2em] text-warm-stone">Inspection Report Workspace</p>
-          <h1 className="serif max-w-3xl text-6xl leading-[1.05] text-ink-black md:text-7xl">
-            智能检测报告生成系统
-          </h1>
-          <p className="mt-8 max-w-2xl text-base leading-7 text-graphite">
-            将机床检测原始记录、规则模板与报告编制流程集中到一个可追溯的工作台中。首期使用 mock adapter 演示完整业务流。
-          </p>
-          <div className="mt-10 grid max-w-2xl grid-cols-2 gap-4">
-            {["原始记录解析", "字段规则配置", "报告初稿生成", "日志追溯"].map((item) => (
-              <div key={item} className="rounded-lg border border-ink-black/25 px-3.5 py-2 text-sm">
-                {item}
-              </div>
-            ))}
-          </div>
-        </section>
-        <Card className="p-5">
-          <div className="mb-5">
-            <p className="text-xs uppercase tracking-[0.18em] text-warm-stone">Login</p>
-            <h2 className="serif mt-3 text-4xl">进入系统</h2>
-          </div>
-          <div className="space-y-4">
-            <label className="block">
-              <span className="mb-2 block text-sm text-graphite">账号</span>
-              <div className="relative">
-                <UserRound className="absolute left-4 top-1/2 size-4 -translate-y-1/2 text-warm-stone" />
-                <Input className="w-full pl-11" defaultValue="zhanggong" />
-              </div>
-            </label>
-            <label className="block">
-              <span className="mb-2 block text-sm text-graphite">密码</span>
-              <div className="relative">
-                <LockKeyhole className="absolute left-4 top-1/2 size-4 -translate-y-1/2 text-warm-stone" />
-                <Input className="w-full pl-11" type="password" defaultValue="report-demo" />
-              </div>
-            </label>
-            <div className="flex items-center justify-between text-sm text-graphite">
-              <label className="flex items-center gap-2">
-                <input type="checkbox" defaultChecked />
-                记住账号
-              </label>
-              <button className="underline decoration-ink-black/25 underline-offset-4">忘记密码</button>
+    <AuthLayout
+      eyebrow="报告系统"
+      title="检测报告系统"
+      subtitle="内部工作台入口。完成身份确认后即可进入报告编制流程。"
+      activeStep="login"
+    >
+      <Card className="rounded-[40px] border-ink-black/20 bg-parchment-cream/90 p-6 shadow-editorial backdrop-blur md:p-7">
+        <div className="mb-7">
+          <p className="text-xs uppercase text-warm-stone">Login</p>
+          <h2 className="serif mt-3 text-4xl leading-tight">进入系统</h2>
+        </div>
+
+        <div className="space-y-5">
+          <label className="block">
+            <span className="mb-2 block text-sm text-graphite">账号</span>
+            <div className="relative">
+              <UserRound className="absolute left-4 top-1/2 size-4 -translate-y-1/2 text-warm-stone" />
+              <Input
+                className="h-12 w-full rounded-full border-ink-black/25 bg-parchment-cream pl-11 pr-4 text-[15px]"
+                value={username}
+                autoComplete="username"
+                disabled={submitting}
+                onChange={(event) => setUsername(event.target.value)}
+              />
             </div>
+          </label>
+
+          <label className="block">
+            <span className="mb-2 block text-sm text-graphite">密码</span>
+            <div className="relative">
+              <LockKeyhole className="absolute left-4 top-1/2 size-4 -translate-y-1/2 text-warm-stone" />
+              <Input
+                className="h-12 w-full rounded-full border-ink-black/25 bg-parchment-cream pl-11 pr-12 text-[15px]"
+                type={showPassword ? "text" : "password"}
+                value={password}
+                autoComplete="current-password"
+                disabled={submitting}
+                onChange={(event) => setPassword(event.target.value)}
+              />
+              <button
+                type="button"
+                aria-label={showPassword ? "隐藏密码" : "显示密码"}
+                title={showPassword ? "隐藏密码" : "显示密码"}
+                className="focus-ring absolute right-2 top-1/2 grid size-8 -translate-y-1/2 place-items-center rounded-full text-graphite transition hover:bg-lavender-mist hover:text-ink-black"
+                disabled={submitting}
+                onClick={() => setShowPassword((next) => !next)}
+              >
+                {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+              </button>
+            </div>
+          </label>
+
+          <div className="flex items-center justify-between gap-4 text-sm text-graphite">
+            <label className="flex min-w-0 items-center gap-2">
+              <input type="checkbox" defaultChecked className="size-4 accent-charcoal" />
+              <span>记住账号</span>
+            </label>
+            <Link className="shrink-0 underline decoration-ink-black/25 underline-offset-4 hover:text-ink-black" href="/forgot-password">
+              忘记密码
+            </Link>
           </div>
-          <Link href="/records" className="mt-6 block">
-            <Button className="w-full" variant="primary">
-              登录
-              <ArrowRight className="size-4" />
-            </Button>
-          </Link>
-          <p className="mt-5 text-xs leading-5 text-warm-stone">演示环境：登录不会请求真实鉴权服务，后续由 auth adapter 接入。</p>
-        </Card>
-      </div>
-    </main>
+        </div>
+
+        {error ? (
+          <p className="mt-5 rounded-[18px] border border-ink-black/20 bg-lavender-mist/60 px-4 py-3 text-sm text-graphite">
+            {error}
+          </p>
+        ) : null}
+
+        <Button className="mt-7 h-12 w-full rounded-full text-[15px]" variant="primary" onClick={handleLogin} loading={submitting} loadingText="登录中...">
+          登录
+          <ArrowRight className="size-4" />
+        </Button>
+
+      </Card>
+    </AuthLayout>
   );
 }

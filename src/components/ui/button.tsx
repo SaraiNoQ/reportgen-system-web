@@ -1,4 +1,5 @@
 import type { ButtonHTMLAttributes, ReactNode } from "react";
+import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
@@ -6,9 +7,11 @@ type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: ButtonVariant;
   children: ReactNode;
+  loading?: boolean;
+  loadingText?: string;
 };
 
-export function Button({ className, variant = "secondary", children, ...props }: ButtonProps) {
+export function Button({ className, variant = "secondary", children, disabled, loading = false, loadingText, ...props }: ButtonProps) {
   return (
     <button
       className={cn(
@@ -20,9 +23,17 @@ export function Button({ className, variant = "secondary", children, ...props }:
         variant === "danger" && "border-ink-black bg-ink-black text-parchment-cream hover:bg-charcoal",
         className
       )}
+      disabled={disabled || loading}
       {...props}
     >
-      {children}
+      {loading ? (
+        <>
+          <Loader2 className="size-4 animate-spin" />
+          {loadingText ?? children}
+        </>
+      ) : (
+        children
+      )}
     </button>
   );
 }
