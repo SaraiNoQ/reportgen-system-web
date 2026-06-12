@@ -41,12 +41,19 @@ function readSession() {
   if (!raw) return null;
 
   try {
-    const session = JSON.parse(raw) as AuthSession;
-    if (new Date(session.expiresAt).getTime() < Date.now()) {
+    const session = JSON.parse(raw) as Partial<AuthSession>;
+    const expiresAt = session.expiresAt ? new Date(session.expiresAt).getTime() : Number.NaN;
+    if (
+      !session.token ||
+      !session.user ||
+      !session.authenticatedAt ||
+      !Number.isFinite(expiresAt) ||
+      expiresAt <= Date.now()
+    ) {
       window.localStorage.removeItem(SESSION_KEY);
       return null;
     }
-    return session;
+    return session as AuthSession;
   } catch {
     window.localStorage.removeItem(SESSION_KEY);
     return null;
@@ -78,6 +85,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const stored = readSession();
     setSession(stored);
     setAuthReady(true);
+    if (!stored) return;
+
+    let mounted = true;
+    authApi
+      .me()
+      .then((refreshed) => {
+        if (!mounted) return;
+        writeSession(refreshed);
+        setSession(refreshed);
+      })
+      .catch(() => {
+        // Keep a still-valid local session when the API is temporarily unavailable.
+      });
+
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -143,16 +167,38 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const markMessageRead = useCallback(async (messageId: string) => {
+    let changed = false;
     setMessages((current) =>
-      current.map((message) => (message.id === messageId ? { ...message, read: true } : message))
+      current.map((message) => {
+        if (message.id !== messageId || message.read) return message;
+        changed = true;
+        return { ...message, read: true };
+      })
     );
-    await messageApi.markRead(messageId).catch(() => undefined);
+    if (!changed) return;
+    try {
+      await messageApi.markRead(messageId);
+    } catch {
+      setMessages((current) =>
+        current.map((message) => (message.id === messageId ? { ...message, read: false } : message))
+      );
+    }
   }, []);
 
   const markAllMessagesRead = useCallback(async () => {
+    const unreadIds = new Set(messages.filter((message) => !message.read).map((message) => message.id));
+    if (!unreadIds.size) return;
     setMessages((current) => current.map((message) => ({ ...message, read: true })));
-    await messageApi.markAllRead().catch(() => undefined);
-  }, []);
+    try {
+      await messageApi.markAllRead();
+    } catch {
+      setMessages((current) =>
+        current.map((message) =>
+          unreadIds.has(message.id) ? { ...message, read: false } : message
+        )
+      );
+    }
+  }, [messages]);
 
   const refreshMessages = useCallback(async () => {
     const nextMessages = await messageApi.list();

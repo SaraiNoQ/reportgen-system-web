@@ -28,6 +28,15 @@ const API_BASE =
   process.env.CORE_API_URL ??
   "http://127.0.0.1:8000/api/v1";
 
+class CoreApiError extends Error {
+  constructor(
+    public status: number,
+    path: string
+  ) {
+    super(`Core API ${status}: ${path}`);
+  }
+}
+
 function authHeader() {
   if (typeof window === "undefined") return {};
   const raw = window.localStorage.getItem("report-generator.session");
@@ -54,7 +63,7 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   if (!response.ok) {
-    throw new Error(`Core API ${response.status}: ${path}`);
+    throw new CoreApiError(response.status, path);
   }
 
   return response.json() as Promise<T>;
@@ -87,26 +96,60 @@ function deleteJson<T>(path: string): Promise<T> {
   return requestJson<T>(path, { method: "DELETE" });
 }
 
+type AuthResponse = {
+  ok: boolean;
+  accessToken: string;
+  expiresAt?: string;
+  authenticatedAt?: string;
+  user: AppUser;
+};
+
+function tokenExpiry(token: string) {
+  try {
+    const payload = JSON.parse(atob(token.split(".")[1])) as { exp?: number };
+    if (payload.exp) return new Date(payload.exp * 1000).toISOString();
+  } catch {
+    // The mock adapter uses an opaque token.
+  }
+  return new Date(Date.now() + 1000 * 60 * 60).toISOString();
+}
+
+function normalizeSession(response: AuthResponse): AuthSession {
+  return {
+    token: response.accessToken,
+    user: response.user,
+    expiresAt: response.expiresAt ?? tokenExpiry(response.accessToken),
+    authenticatedAt:
+      response.authenticatedAt ??
+      (response.user.lastLogin && response.user.lastLogin !== "尚未登录"
+        ? response.user.lastLogin
+        : new Date().toISOString())
+  };
+}
+
 export const authApi = {
   async login(username: string, password: string) {
     const fallbackUser =
       users.find((user) => user.name === username || user.name === "张工") ?? users[0];
     const fallback: AuthSession = {
       token: `mock-token-${Date.now()}`,
-      user: fallbackUser,
-      expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 8).toISOString()
+      user: { ...fallbackUser, lastLogin: new Date().toISOString() },
+      expiresAt: new Date(Date.now() + 1000 * 60 * 60).toISOString(),
+      authenticatedAt: new Date().toISOString()
     };
 
-    return withFallback(() => postJson<AuthSession>("/auth/login", { username, password }), fallback);
+    try {
+      const response = await postJson<AuthResponse>("/auth/login", { username, password });
+      return normalizeSession(response);
+    } catch (error) {
+      if (error instanceof CoreApiError) throw error;
+      await wait();
+      return fallback;
+    }
   },
   async me() {
-    const fallback: AuthSession = {
-      token: "mock-token-restored",
-      user: users[0],
-      expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 8).toISOString()
-    };
-
-    return withFallback(() => requestJson<AuthSession>("/auth/me"), fallback);
+    const response = await requestJson<AuthResponse>("/auth/me");
+    return normalizeSession(response);
   },
   async logout() {
     return withFallback(() => postJson<{ ok: boolean }>("/auth/logout", {}), { ok: true });

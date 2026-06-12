@@ -93,6 +93,7 @@ export type AuthSession = {
   token: string;
   user: AppUser;
   expiresAt: string;
+  authenticatedAt: string;
 };
 
 export type SystemMessage = {

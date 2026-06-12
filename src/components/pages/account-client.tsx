@@ -4,12 +4,11 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useMemo, useState } from "react";
 import {
-  Bell,
   CheckCheck,
   Clock3,
   FileText,
-  Loader2,
   LogOut,
+  Mail,
   MailOpen,
   Search,
   ShieldCheck,
@@ -32,6 +31,21 @@ function typeClass(type: SystemMessage["type"]) {
   if (type === "警告") return "border-amber-700/30 bg-amber-50 text-amber-800";
   if (type === "失败") return "border-red-700/30 bg-red-50 text-red-800";
   return "border-ink-black/20 bg-lavender-mist text-graphite";
+}
+
+function formatDateTime(value?: string) {
+  if (!value || value === "尚未登录") return "尚未登录";
+  const normalized = value.includes("T") ? value : value.replace(" ", "T");
+  const date = new Date(normalized);
+  if (!Number.isFinite(date.getTime())) return value;
+  return date.toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  });
 }
 
 export function AccountClient() {
@@ -114,7 +128,7 @@ export function AccountClient() {
               activeTab === "messages" ? "bg-ink-black text-parchment-cream" : "text-graphite hover:bg-lavender-mist"
             )}
           >
-            消息中心
+            消息
           </button>
           <button
             type="button"
@@ -132,18 +146,7 @@ export function AccountClient() {
       {activeTab === "messages" ? (
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
           <Card className="p-4">
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-ink-black/10 pb-3">
-              <div>
-                <h2 className="serif text-3xl leading-tight">消息中心</h2>
-                <p className="mt-1 text-sm text-warm-stone">查看系统通知、解析状态和报告生成结果。</p>
-              </div>
-              <Button variant="secondary" disabled={!unreadCount || Boolean(markingMessageId)} onClick={handleMarkAllRead} loading={markingAll} loadingText="同步中">
-                <CheckCheck className="size-4" />
-                全部已读
-              </Button>
-            </div>
-
-            <div className="mt-3 grid gap-2 md:grid-cols-[minmax(0,1fr)_160px_160px]">
+            <div className="grid gap-2 border-b border-ink-black/10 pb-3 lg:grid-cols-[minmax(0,1fr)_150px_150px_auto]">
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-warm-stone" />
                 <Input className="w-full pl-9" placeholder="搜索消息标题、模块或内容" value={query} onChange={(event) => setQuery(event.target.value)} />
@@ -158,28 +161,32 @@ export function AccountClient() {
                   <option key={item}>{item}</option>
                 ))}
               </Select>
+              <Button variant="secondary" disabled={!unreadCount || Boolean(markingMessageId)} onClick={handleMarkAllRead} loading={markingAll} loadingText="同步中">
+                <CheckCheck className="size-4" />
+                全部已读
+              </Button>
             </div>
 
-            <div className="mt-4 space-y-2">
+            <div className="mt-3 space-y-2">
               {filteredMessages.map((message) => {
                 const project = projects.find((item) => item.id === message.projectId);
                 return (
                   <button
                     key={message.id}
                     type="button"
-                    disabled={markingAll || Boolean(markingMessageId)}
-                    onClick={() => void handleMarkMessageRead(message.id)}
+                    disabled={markingAll || (!message.read && Boolean(markingMessageId))}
+                    onClick={message.read ? undefined : () => void handleMarkMessageRead(message.id)}
                     className={cn(
-                      "grid w-full gap-3 rounded-lg border px-3 py-3 text-left transition disabled:cursor-not-allowed disabled:opacity-65 md:grid-cols-[1fr_auto]",
+                      "relative grid w-full overflow-hidden rounded-lg border px-3 py-3 text-left transition-colors md:grid-cols-[1fr_auto] md:gap-3",
                       message.read
-                        ? "border-ink-black/12 bg-transparent hover:border-ink-black/30"
-                        : "border-ink-black/35 bg-parchment-cream shadow-[0_10px_30px_rgba(0,0,0,0.06)] hover:bg-lavender-mist/35"
+                        ? "cursor-default border-ink-black/10 bg-ink-black/[0.015] text-graphite"
+                        : "border-[#7186ad] bg-[#e8eef9] pl-4 shadow-[0_8px_22px_rgba(70,88,125,0.12)] before:absolute before:inset-y-0 before:left-0 before:w-1 before:bg-[#536b9a] hover:border-[#536b9a] hover:bg-[#dfe8f8]"
                     )}
                   >
                     <span className="min-w-0">
                       <span className="flex flex-wrap items-center gap-2">
                         <span className="text-base font-medium">{message.title}</span>
-                        {!message.read ? <span className="size-2 rounded-full bg-ink-black" /> : null}
+                        {!message.read ? <span className="size-2 rounded-full bg-[#536b9a]" /> : null}
                       </span>
                       <span className="mt-1 block text-sm text-graphite">{message.content}</span>
                       <span className="mt-2 flex flex-wrap items-center gap-2 text-xs text-warm-stone">
@@ -193,7 +200,11 @@ export function AccountClient() {
                     </span>
                     <span className="flex items-center gap-2 md:justify-end">
                       <span className={cn("rounded-md border px-2 py-1 text-xs", typeClass(message.type))}>{message.type}</span>
-                      {markingMessageId === message.id ? <Loader2 className="size-4 animate-spin text-ink-black" /> : message.read ? <MailOpen className="size-4 text-warm-stone" /> : <Bell className="size-4 text-ink-black" />}
+                      {message.read ? (
+                        <MailOpen className="size-4 text-warm-stone" aria-label="已读" />
+                      ) : (
+                        <Mail className="size-4 text-[#405783]" aria-label="未读" />
+                      )}
                     </span>
                   </button>
                 );
@@ -249,15 +260,17 @@ export function AccountClient() {
               </div>
               <div className="flex items-center justify-between border-b border-ink-black/10 pb-2">
                 <span className="text-warm-stone">账号状态</span>
-                <Badge>{user?.status ?? "-"}</Badge>
+                <Badge className={cn(user?.status === "启用" ? "border-emerald-700/30 bg-emerald-50 text-emerald-800" : "border-red-700/30 bg-red-50 text-red-800")}>
+                  {user?.status ?? "-"}
+                </Badge>
               </div>
               <div className="flex items-center justify-between border-b border-ink-black/10 pb-2">
                 <span className="text-warm-stone">最近登录</span>
-                <span>{user?.lastLogin ?? "-"}</span>
+                <span>{formatDateTime(user?.lastLogin)}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-warm-stone">会话有效期</span>
-                <span>{session ? new Date(session.expiresAt).toLocaleString("zh-CN", { hour12: false }) : "-"}</span>
+                <span>{formatDateTime(session?.expiresAt)}</span>
               </div>
             </div>
             <Button className="mt-5 w-full" variant="primary" onClick={handleLogout} loading={loggingOut} loadingText="退出中">
