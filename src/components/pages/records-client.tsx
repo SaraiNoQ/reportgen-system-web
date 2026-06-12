@@ -16,6 +16,7 @@ import {
   FileSearch,
   GripVertical,
   RefreshCcw,
+  Search,
   Trash2,
   UploadCloud,
   X
@@ -30,6 +31,19 @@ import { cn } from "@/lib/utils";
 
 const templateRules = ["字段定义 34 项", "字段映射 18 条", "校验规则 12 条", "提示词版本 prompt-geo-v2.1"];
 const requiredFields = ["检验项目", "测量位置", "实测值", "标准值", "单位", "判定结果"];
+const DETECTED_TYPE_OPTIONS: Array<{
+  id: DetectedType;
+  title: string;
+  template: string;
+  code: string;
+  scope: string;
+}> = [
+  { id: "几何精度", title: "几何精度", template: "机床几何精度检测记录模板", code: "TYPE-GEOMETRY", scope: "平面度、直线度、圆度、同轴度" },
+  { id: "位置精度", title: "位置精度", template: "位置精度检测记录模板", code: "TYPE-POSITION", scope: "定位精度、重复定位、平行度、垂直度" },
+  { id: "电气参数", title: "电气参数", template: "电气参数检测记录模板", code: "TYPE-ELECTRIC", scope: "电压、电流、绝缘、接地" },
+  { id: "力学性能", title: "力学性能", template: "力学性能检测记录模板", code: "TYPE-MECHANIC", scope: "载荷、刚度、振动、冲击" },
+  { id: "综合检测", title: "综合检测", template: "综合检测记录模板", code: "TYPE-COMPOSITE", scope: "多类型混合记录、整机综合判定" }
+];
 
 type UploadQueueItem = {
   id: string;
@@ -202,6 +216,7 @@ export function RecordsClient({
   const [draftValue, setDraftValue] = useState("");
   const [allFieldsOpen, setAllFieldsOpen] = useState(false);
   const [editingTypeFileId, setEditingTypeFileId] = useState<string | null>(null);
+  const [typeSearch, setTypeSearch] = useState("");
   const [parseEventSets, setParseEventSets] = useState<Record<string, ParseEvent[]>>(() =>
     Object.fromEntries(files.map((file, index) => [file.id, index === 0 && file.parseStatus !== "解析成功" ? initialEvents : createParseEvents(file)]))
   );
@@ -236,6 +251,13 @@ export function RecordsClient({
   const generateReady = failedFiles.length === 0 && activeCount === 0 && requiredReady >= 5;
   const activeField = editableFields.find((field) => field.id === activeFieldId);
   const editingFile = uploaded.find((file) => file.id === editingTypeFileId);
+  const filteredTypeOptions = useMemo(() => {
+    const keyword = typeSearch.trim().toLowerCase();
+    if (!keyword) return DETECTED_TYPE_OPTIONS;
+    return DETECTED_TYPE_OPTIONS.filter((option) =>
+      `${option.title} ${option.template} ${option.code} ${option.scope}`.toLowerCase().includes(keyword)
+    );
+  }, [typeSearch]);
   const activeParseFile = uploaded.find((file) => file.id === activeParseFileId) ?? uploaded[0];
   const activeParseEvents = activeParseFile ? parseEventSets[activeParseFile.id] ?? [] : [];
   const activeParseIndex = activeParseFile ? Math.max(0, uploaded.findIndex((file) => file.id === activeParseFile.id)) : -1;
@@ -423,6 +445,7 @@ export function RecordsClient({
       current.map((file) => (file.id === fileId ? { ...file, detectedType, typeConfirmed: true } : file))
     );
     setEditingTypeFileId(null);
+    setTypeSearch("");
     setNotice("检测类型已人工调整为 " + detectedType + "，来源标记为人工确认。");
   }
 
@@ -1247,36 +1270,81 @@ export function RecordsClient({
       ) : null}
 
       {editingTypeFileId && editingFile ? (
-        <div className="fixed inset-0 z-30 flex items-center justify-center bg-ink-black/35 p-4 backdrop-blur-sm" onClick={() => setEditingTypeFileId(null)}>
+        <div
+          className="fixed inset-0 z-30 flex items-center justify-center bg-ink-black/35 p-4 backdrop-blur-sm"
+          onClick={() => {
+            setEditingTypeFileId(null);
+            setTypeSearch("");
+          }}
+        >
           <div
-            className="w-full max-w-[380px] rounded-xl border border-ink-black bg-parchment-cream p-5 shadow-editorial"
+            className="w-full max-w-[620px] rounded-xl border border-ink-black bg-parchment-cream p-5 shadow-editorial"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-start justify-between gap-3 border-b border-ink-black/15 pb-3">
+            <div className="mb-4 flex items-start justify-between gap-3">
               <div>
                 <p className="text-xs uppercase tracking-[0.12em] text-warm-stone">Detected Type</p>
-                <h2 className="serif text-[1.5rem] leading-tight mt-0.5">选择检测类型</h2>
-                <p className="mt-1 text-sm text-graphite truncate max-w-[280px]">{editingFile.name}</p>
+                <h2 className="serif mt-0.5 text-[1.6rem] leading-tight">检测类型</h2>
+                <p className="mt-1.5 text-sm leading-6 text-graphite">
+                  当前文件：{editingFile.name}。类型决定后续字段抽取、规则校验和报告章节归类。
+                </p>
               </div>
-              <button type="button" aria-label="关闭" onClick={() => setEditingTypeFileId(null)} className="shrink-0">
+              <button
+                type="button"
+                aria-label="关闭检测类型选择"
+                onClick={() => {
+                  setEditingTypeFileId(null);
+                  setTypeSearch("");
+                }}
+                className="shrink-0"
+              >
                 <X className="size-5" />
               </button>
             </div>
-            <div className="mt-4 grid gap-2">
-              {(["几何精度", "位置精度", "电气参数", "力学性能", "综合检测"] as DetectedType[]).map((type) => (
-                <button
-                  key={type}
-                  type="button"
-                  onClick={() => updateFileType(editingFile.id, type)}
-                  className={`w-full rounded-lg border px-4 py-2.5 text-left text-sm transition ${
-                    editingFile.detectedType === type
-                      ? "border-ink-black bg-ink-black text-parchment-cream"
-                      : "border-ink-black/20 hover:border-ink-black/50 hover:bg-parchment-cream/70"
-                  }`}
-                >
-                  {type}
-                </button>
-              ))}
+            <label className="mb-3 flex items-center gap-2 rounded-lg border border-ink-black/20 bg-white/35 px-3 py-2">
+              <Search className="size-4 text-warm-stone" />
+              <input
+                className="w-full bg-transparent text-sm outline-none placeholder:text-warm-stone"
+                value={typeSearch}
+                onChange={(event) => setTypeSearch(event.target.value)}
+                placeholder="搜索类型、模板、编码或适用范围"
+                autoFocus
+              />
+            </label>
+            <div className="max-h-[46vh] space-y-2 overflow-y-auto pr-1">
+              {filteredTypeOptions.map((option) => {
+                const checked = editingFile.detectedType === option.id;
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => updateFileType(editingFile.id, option.id)}
+                    className={cn(
+                      "focus-ring flex w-full items-center justify-between gap-4 rounded-lg border px-4 py-3 text-left transition",
+                      checked
+                        ? "border-ink-black bg-ink-black text-parchment-cream"
+                        : "border-ink-black/15 hover:border-ink-black/45"
+                    )}
+                  >
+                    <span className="min-w-0">
+                      <span className="block text-sm font-medium">{option.title}</span>
+                      <span className="mt-1 block text-xs opacity-70">{option.template}</span>
+                      <span className="mt-1 block text-xs opacity-70">{option.scope}</span>
+                    </span>
+                    <span className="flex shrink-0 items-center gap-3 text-xs">
+                      <span>{option.code}</span>
+                      <span className={cn("grid size-5 place-items-center rounded-full border", checked ? "border-parchment-cream" : "border-ink-black/25")}>
+                        {checked ? <CheckCircle2 className="size-3.5" /> : null}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
+              {filteredTypeOptions.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-ink-black/25 px-4 py-8 text-center text-sm text-warm-stone">
+                  没有匹配的检测类型，请调整关键词。
+                </div>
+              ) : null}
             </div>
           </div>
         </div>
