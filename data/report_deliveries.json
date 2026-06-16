@@ -1,0 +1,32 @@
+[
+  {
+    "id": "d3",
+    "kind": "export",
+    "scope": "整份报告",
+    "fileName": "整份报告_检测报告.docx",
+    "format": "docx",
+    "status": "ready",
+    "sectionId": null,
+    "createdAt": "2026-06-13 19:50"
+  },
+  {
+    "id": "d2",
+    "kind": "export",
+    "scope": "数字化工厂智能制造产线检验",
+    "fileName": "数字化工厂智能制造产线检验_检测报告.pdf",
+    "format": "pdf",
+    "status": "ready",
+    "sectionId": null,
+    "createdAt": "2026-06-13 19:50"
+  },
+  {
+    "id": "d1",
+    "kind": "preview",
+    "scope": "report",
+    "fileName": "智能制造产线项目检测报告.pdf",
+    "format": "pdf",
+    "status": "ready",
+    "sectionId": null,
+    "createdAt": "2024-05-20 11:18"
+  }
+]

@@ -1,0 +1,18 @@
+[
+  {
+    "userId": "u1",
+    "currentProjectId": "p4"
+  },
+  {
+    "userId": "u2",
+    "currentProjectId": "p2"
+  },
+  {
+    "userId": "u3",
+    "currentProjectId": "p1"
+  },
+  {
+    "userId": "u4",
+    "currentProjectId": "p4"
+  }
+]

@@ -1,0 +1,38 @@
+[
+  {
+    "id": "rtv1",
+    "templateId": "rt1",
+    "version": "v2.1.0",
+    "label": "v2.1.0 生效中",
+    "status": "生效中",
+    "createdAt": "2024-05-18",
+    "actor": "管理员"
+  },
+  {
+    "id": "rtv2",
+    "templateId": "rt1",
+    "version": "v2.0.0",
+    "label": "v2.0.0 已发布",
+    "status": "已发布",
+    "createdAt": "2024-05-01",
+    "actor": "管理员"
+  },
+  {
+    "id": "rtv3",
+    "templateId": "rt1",
+    "version": "v1.0.0",
+    "label": "v1.0.0 已归档",
+    "status": "已归档",
+    "createdAt": "2024-04-10",
+    "actor": "管理员"
+  },
+  {
+    "id": "rtv4",
+    "templateId": "rt2",
+    "version": "v1.8.0",
+    "label": "v1.8.0 生效中",
+    "status": "生效中",
+    "createdAt": "2024-04-26",
+    "actor": "管理员"
+  }
+]

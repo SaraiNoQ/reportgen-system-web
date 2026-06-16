@@ -1,0 +1,22 @@
+{
+  "s1": {
+    "sectionId": "s1",
+    "categoryId": "cover",
+    "revisionName": null
+  },
+  "s2": {
+    "sectionId": "s2",
+    "categoryId": "conclusion",
+    "revisionName": null
+  },
+  "s3": {
+    "sectionId": "s3",
+    "categoryId": "geometry",
+    "revisionName": null
+  },
+  "s4": {
+    "sectionId": "s4",
+    "categoryId": "attachment",
+    "revisionName": null
+  }
+}

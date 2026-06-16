@@ -1,0 +1,78 @@
+{
+  "f1": [
+    {
+      "id": "f1-e1",
+      "name": "检验项目",
+      "value": "平面度",
+      "confidence": 98
+    },
+    {
+      "id": "f1-e2",
+      "name": "测量位置",
+      "value": "左侧工作面",
+      "confidence": 96
+    },
+    {
+      "id": "f1-e3",
+      "name": "实测值",
+      "value": "0.012 mm",
+      "confidence": 98
+    },
+    {
+      "id": "f1-e4",
+      "name": "标准值",
+      "value": "0.020 mm",
+      "confidence": 97
+    },
+    {
+      "id": "f1-e5",
+      "name": "单位",
+      "value": "mm",
+      "confidence": 100
+    },
+    {
+      "id": "f1-e6",
+      "name": "判定结果",
+      "value": "合格",
+      "confidence": 99
+    }
+  ],
+  "f2": [
+    {
+      "id": "f2-e1",
+      "name": "检验项目",
+      "value": "平面度2",
+      "confidence": 97
+    },
+    {
+      "id": "f2-e2",
+      "name": "测量位置",
+      "value": "左侧工作面",
+      "confidence": 95
+    },
+    {
+      "id": "f2-e3",
+      "name": "实测值",
+      "value": "0.012 mm",
+      "confidence": 97
+    },
+    {
+      "id": "f2-e4",
+      "name": "标准值",
+      "value": "0.020 mm",
+      "confidence": 96
+    },
+    {
+      "id": "f2-e5",
+      "name": "单位",
+      "value": "mm",
+      "confidence": 99
+    },
+    {
+      "id": "f2-e6",
+      "name": "判定结果",
+      "value": "合格",
+      "confidence": 98
+    }
+  ]
+}

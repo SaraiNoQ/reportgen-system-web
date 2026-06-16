@@ -1,0 +1,85 @@
+[
+  {
+    "id": "rt1",
+    "category": "几何精度",
+    "name": "平面度检测模板",
+    "version": "v2.1.0",
+    "updatedAt": "2024-05-18",
+    "fields": [
+      {
+        "id": "rf1",
+        "name": "检验项目",
+        "code": "inspection_item",
+        "type": "文本",
+        "required": true,
+        "source": "固定值",
+        "format": "{value}",
+        "validation": "必填",
+        "example": "平面度"
+      },
+      {
+        "id": "rf2",
+        "name": "测量位置",
+        "code": "measure_position",
+        "type": "文本",
+        "required": true,
+        "source": "原始记录",
+        "format": "{value}",
+        "validation": "必填",
+        "example": "左侧工作面"
+      },
+      {
+        "id": "rf3",
+        "name": "实测值",
+        "code": "actual_value",
+        "type": "数值",
+        "required": true,
+        "source": "原始记录",
+        "format": "{value} mm",
+        "validation": "必填，数值范围 -9999 ~ 9999",
+        "example": "0.012"
+      },
+      {
+        "id": "rf4",
+        "name": "标准值",
+        "code": "standard_value",
+        "type": "数值",
+        "required": true,
+        "source": "固定值",
+        "format": "{value} mm",
+        "validation": "必填，保留 3 位小数",
+        "example": "0.020"
+      },
+      {
+        "id": "rf5",
+        "name": "判定结果",
+        "code": "judgement",
+        "type": "文本",
+        "required": true,
+        "source": "规则生成",
+        "format": "{value}",
+        "validation": "合格/不合格",
+        "example": "合格"
+      },
+      {
+        "id": "rf6",
+        "name": "备注",
+        "code": "remark",
+        "type": "文本",
+        "required": false,
+        "source": "人工填写",
+        "format": "{value}",
+        "validation": "非必填",
+        "example": "无"
+      }
+    ]
+  },
+  {
+    "id": "rt2",
+    "category": "位置精度",
+    "name": "直线度检测模板",
+    "version": "v1.8.0",
+    "updatedAt": "2024-04-26",
+    "fields": []
+  }
+]

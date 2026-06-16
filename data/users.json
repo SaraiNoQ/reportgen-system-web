@@ -1,0 +1,34 @@
+[
+  {
+    "id": "u1",
+    "name": "张工",
+    "role": "编制员",
+    "department": "检测一部",
+    "status": "启用",
+    "lastLogin": "2026-06-13 20:10"
+  },
+  {
+    "id": "u2",
+    "name": "李工",
+    "role": "审核员",
+    "department": "质量部",
+    "status": "启用",
+    "lastLogin": "2024-05-20 09:40"
+  },
+  {
+    "id": "u3",
+    "name": "管理员",
+    "role": "管理员",
+    "department": "系统管理",
+    "status": "启用",
+    "lastLogin": "2024-05-20 08:18"
+  },
+  {
+    "id": "u4",
+    "name": "赵工",
+    "role": "编制员",
+    "department": "检测二部",
+    "status": "禁用",
+    "lastLogin": "2024-05-10 15:20"
+  }
+]

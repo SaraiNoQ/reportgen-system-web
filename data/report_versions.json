@@ -1,0 +1,16 @@
+[
+  {
+    "id": "initial-1",
+    "label": "V1.0 系统 生成初稿",
+    "createdAt": "2024-05-20 11:00",
+    "actor": "系统",
+    "kind": "initial"
+  },
+  {
+    "id": "draft-1",
+    "label": "V1.1 张工 保存草稿",
+    "createdAt": "2024-05-20 11:12",
+    "actor": "张工",
+    "kind": "draft"
+  }
+]
