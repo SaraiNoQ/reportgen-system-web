@@ -2,7 +2,7 @@ import { ReportsClient } from "@/components/pages/reports-client";
 import { reportApi } from "@/lib/services/api";
 
 export default async function ReportsPage() {
-  const sections = await reportApi.sections();
+  const workspace = await reportApi.workspace();
 
-  return <ReportsClient sections={sections} />;
+  return <ReportsClient workspace={workspace} />;
 }

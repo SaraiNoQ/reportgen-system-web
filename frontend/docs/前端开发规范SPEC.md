@@ -2,19 +2,21 @@
 
 ## 目标
 
-建立一个结构清晰、便于后续接入后端的 Next.js 前端工程。页面先通过 mock adapter 完成业务演示，后续替换 adapter 实现即可接入真实接口。
+建立一个结构清晰、已通过 Core API adapter 接入后端的 Next.js 前端工程。页面应通过统一 adapter 调用后端接口，mock 数据仅作为后端不可用时的少量只读 fallback 和演示种子参考。
 
 ## 路由规范
 
 | 路由 | 页面 |
 | --- | --- |
 | `/login` | 系统登录 |
+| `/forgot-password` | 账号协助申请 |
 | `/records` | 原始记录上传与解析 |
 | `/rules` | 规则配置 |
 | `/reports` | 报告生成与编辑 |
 | `/projects` | 项目管理 |
 | `/system/users` | 用户管理 |
 | `/system/logs` | 日志管理 |
+| `/account` | 账号信息、消息中心和当前项目切换 |
 
 根路由 `/` 重定向到 `/records`。
 
@@ -40,14 +42,14 @@
 ## 数据与接口规范
 
 - 类型定义放在 `src/lib/types/domain.ts`。
-- mock 数据放在 `src/lib/mock/data.ts`。
+- mock 数据放在 `src/lib/mock/data.ts`，仅作为 fallback 和演示种子，不作为页面写操作的数据源。
 - 页面只调用 `src/lib/services/api.ts` 暴露的 adapter，不直接读取 mock 数据。
-- 后续真实接口接入时，保持 adapter 函数签名稳定，替换内部实现。
+- 后续接入真实数据库、对象存储和 AI Worker 时，保持 adapter 函数签名稳定，替换 Core API 内部实现。
 
 ## 交互规范
 
-- 所有 mock 操作需要给出可见反馈。
-- 文件上传、解析、保存、提交等动作当前只更新本地 state 或提示文本。
+- 所有接口操作需要给出可见反馈，失败时说明 Core API 状态或当前降级行为。
+- 文件上传、解析、保存、提交等动作应优先调用 Core API；只有后端不可用时才允许临时保留页面状态兜底。
 - 复杂表格在小屏允许横向滚动，不强行压缩列内容。
 - 导航状态必须根据当前路径高亮。
 

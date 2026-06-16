@@ -164,7 +164,7 @@ export function Sidebar({
           {collapsed ? <ChevronsRight className="size-4" /> : <ChevronsLeft className="size-4" />}
         </button>
         <div className="overflow-hidden whitespace-nowrap transition-[max-width,opacity] duration-200">
-          {collapsed ? "v0.1" : "v0.1 mock adapter"}
+          {collapsed ? "v0.1" : "v0.1 Core API"}
         </div>
       </div>
     </aside>
