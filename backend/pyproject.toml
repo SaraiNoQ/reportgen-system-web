@@ -2,11 +2,12 @@
 name = "inspection-report-core-api"
 version = "0.1.0"
 description = "Core API service for the intelligent inspection report generation system."
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.14"
 dependencies = [
   "alembic>=1.13,<2.0",
   "celery>=5.4,<6.0",
   "fastapi>=0.115,<1.0",
+  "gen-report",
   "minio>=7.2,<8.0",
   "passlib[bcrypt]>=1.7,<2.0",
   "psycopg[binary]>=3.2,<4.0",
@@ -45,6 +46,9 @@ asyncio_mode = "auto"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.uv.sources]
+gen-report = { path = "../../GenReportAgent", editable = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
