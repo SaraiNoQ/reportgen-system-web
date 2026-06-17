@@ -8,6 +8,7 @@ ehthumbs.db
 Thumbs.db
 Desktop.ini
 .omo/
+GenReportAgent/
 
 # IDE & Editor
 .vscode/
@@ -64,3 +65,5 @@ pnpm-debug.log*
 
 # Next.js auto-generated
 next-env.d.ts
+
+desktop/

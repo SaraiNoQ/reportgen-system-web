@@ -26,7 +26,7 @@ export default function LoginPage() {
     try {
       const session = await authApi.login(username, password);
       login(session);
-      router.push("/records");
+      router.push("/projects");
     } catch {
       setError("登录失败，请检查 Core API 或账号信息。");
     } finally {

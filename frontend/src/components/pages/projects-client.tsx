@@ -11,6 +11,7 @@ import { Pagination } from "@/components/ui/pagination";
 import { ProjectStatusBadge } from "@/components/ui/status-badge";
 import { DataTable, Td } from "@/components/ui/table";
 import { projectApi, systemApi } from "@/lib/services/api";
+import { useAppContext } from "@/components/providers/app-provider";
 import type { AppUser, CreateProjectRequest, Project, ProjectMetric, ProjectVisibility } from "@/lib/types/domain";
 
 const NEW_PROJECT_FORM: CreateProjectRequest = { name: "", owner: "", visibility: "public", allowedUserIds: [] };
@@ -28,13 +29,14 @@ function actionForProject(project: Project) {
 }
 
 export function ProjectsClient({ metrics, projects: initialProjects }: { metrics: ProjectMetric[]; projects: Project[] }) {
+  const { user } = useAppContext();
   const [projects, setProjects] = useState(initialProjects);
   const [users, setUsers] = useState<AppUser[]>([]);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("全部状态");
   const [toast, setToast] = useState("");
   const [showNewModal, setShowNewModal] = useState(false);
-  const [form, setForm] = useState<CreateProjectRequest>({ ...NEW_PROJECT_FORM });
+  const [form, setForm] = useState<CreateProjectRequest>({ ...NEW_PROJECT_FORM, owner: user?.name ?? "" });
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(5);
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
@@ -156,7 +158,7 @@ export function ProjectsClient({ metrics, projects: initialProjects }: { metrics
         eyebrow="Project Management"
         title="任务看板"
         action={
-          <Button variant="primary" onClick={() => setShowNewModal(true)} disabled={saving}>
+          <Button variant="primary" onClick={() => { setForm((f) => ({ ...f, owner: user?.name ?? "" })); setShowNewModal(true); }} disabled={saving}>
             <Plus className="size-4" />
             新建项目
           </Button>

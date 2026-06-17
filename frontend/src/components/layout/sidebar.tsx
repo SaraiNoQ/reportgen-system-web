@@ -20,10 +20,10 @@ import { useAppContext } from "@/components/providers/app-provider";
 import { cn } from "@/lib/utils";
 
 const nav = [
-  { href: "/records", label: "原始记录上传", icon: UploadCloud },
+  { href: "/projects", label: "项目管理", icon: Gauge },
+  { href: "/records", label: "原始记录", icon: UploadCloud },
   { href: "/reports", label: "报告生成", icon: FileText },
-  { href: "/rules", label: "规则配置", icon: ListChecks },
-  { href: "/projects", label: "项目管理", icon: Gauge }
+  { href: "/rules", label: "规则配置", icon: ListChecks }
 ];
 
 const managementNav = [
