@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import {
   ChevronsLeft,
   ChevronsRight,
@@ -22,11 +22,11 @@ import { cn } from "@/lib/utils";
 const nav = [
   { href: "/records", label: "原始记录上传", icon: UploadCloud },
   { href: "/reports", label: "报告生成", icon: FileText },
-  { href: "/rules", label: "规则配置", icon: ListChecks }
+  { href: "/rules", label: "规则配置", icon: ListChecks },
+  { href: "/projects", label: "项目管理", icon: Gauge }
 ];
 
 const managementNav = [
-  { href: "/projects", label: "项目管理", icon: Gauge },
   { href: "/system/users", label: "用户管理", icon: Users },
   { href: "/system/logs", label: "日志管理", icon: ScrollText }
 ];
@@ -42,15 +42,7 @@ export function Sidebar({
   const { user } = useAppContext();
   const isAdmin = user?.role === "管理员";
 
-  const visibleManagementNav = useMemo(
-    () => managementNav.filter((item) => {
-      if (item.href === "/projects") return true;
-      return isAdmin;
-    }),
-    [isAdmin]
-  );
-
-  const [managementOpen, setManagementOpen] = useState(pathname.startsWith("/projects") || pathname.startsWith("/system"));
+  const [managementOpen, setManagementOpen] = useState(pathname.startsWith("/system"));
 
   return (
     <aside
@@ -76,7 +68,7 @@ export function Sidebar({
       <nav className={cn("flex-1 space-y-1.5 py-3", collapsed ? "px-2" : "px-3")}>
         {nav.map((item) => {
           const Icon = item.icon;
-          const active = pathname === item.href;
+          const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
           return (
             <Link
               key={item.href}
@@ -98,73 +90,75 @@ export function Sidebar({
             </Link>
           );
         })}
-        <div className="pt-2">
-          <button
-            type="button"
-            onClick={() => (collapsed ? onCollapsedChange(false) : setManagementOpen((open) => !open))}
-            className={cn(
-              "flex w-full items-center rounded-lg border border-parchment-cream/15 text-sm text-parchment-cream/80 transition hover:border-parchment-cream/30 hover:text-parchment-cream",
-              collapsed ? "justify-center px-2 py-2" : "justify-between px-3 py-1.5"
-            )}
-            title="管理"
-          >
-            <span className={cn("flex items-center gap-2", collapsed && "gap-0")}>
-              <Settings className="size-4 shrink-0" />
-              <span className={cn("overflow-hidden whitespace-nowrap transition-[max-width,opacity] duration-200", collapsed ? "max-w-0 opacity-0" : "max-w-16 opacity-100")}>
-                管理
+        {isAdmin ? (
+          <div className="pt-2">
+            <button
+              type="button"
+              onClick={() => (collapsed ? onCollapsedChange(false) : setManagementOpen((open) => !open))}
+              className={cn(
+                "flex w-full items-center rounded-lg border border-parchment-cream/15 text-sm text-parchment-cream/80 transition hover:border-parchment-cream/30 hover:text-parchment-cream",
+                collapsed ? "justify-center px-2 py-2" : "justify-between px-3 py-1.5"
+              )}
+              title="管理"
+            >
+              <span className={cn("flex items-center gap-2", collapsed && "gap-0")}>
+                <Settings className="size-4 shrink-0" />
+                <span className={cn("overflow-hidden whitespace-nowrap transition-[max-width,opacity] duration-200", collapsed ? "max-w-0 opacity-0" : "max-w-16 opacity-100")}>
+                  管理
+                </span>
               </span>
-            </span>
-            {!collapsed ? <ChevronDown className={cn("size-4 transition", managementOpen ? "rotate-180" : "")} /> : null}
-          </button>
-          {collapsed ? (
-            <div className="mt-1.5 space-y-1 border-t border-parchment-cream/10 pt-1.5">
-              {visibleManagementNav.map((item) => {
-                const Icon = item.icon;
-                const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
-                return (
-                  <Link
-                    key={item.href}
-                    href={item.href}
-                    aria-label={item.label}
-                    title={item.label}
-                    className={cn(
-                      "flex items-center justify-center rounded-lg border px-2 py-2 text-sm transition",
-                      active
-                        ? "border-parchment-cream bg-parchment-cream text-ink-black"
-                        : "border-transparent text-parchment-cream/64 hover:border-parchment-cream/25 hover:text-parchment-cream"
-                    )}
-                  >
-                    <Icon className="size-4" />
-                  </Link>
-                );
-              })}
-            </div>
-          ) : managementOpen ? (
-            <div className="mt-1.5 space-y-1 pl-2">
-              {visibleManagementNav.map((item) => {
-                const Icon = item.icon;
-                const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
-                return (
-                  <Link
-                    key={item.href}
-                    href={item.href}
-                    aria-label={item.label}
-                    title={item.label}
-                    className={cn(
-                      "flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm transition",
-                      active
-                        ? "border-parchment-cream bg-parchment-cream text-ink-black"
-                        : "border-transparent text-parchment-cream/64 hover:border-parchment-cream/25 hover:text-parchment-cream"
-                    )}
-                  >
-                    <Icon className="size-4" />
-                    {item.label}
-                  </Link>
-                );
-              })}
-            </div>
-          ) : null}
-        </div>
+              {!collapsed ? <ChevronDown className={cn("size-4 transition", managementOpen ? "rotate-180" : "")} /> : null}
+            </button>
+            {collapsed ? (
+              <div className="mt-1.5 space-y-1 border-t border-parchment-cream/10 pt-1.5">
+                {managementNav.map((item) => {
+                  const Icon = item.icon;
+                  const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+                  return (
+                    <Link
+                      key={item.href}
+                      href={item.href}
+                      aria-label={item.label}
+                      title={item.label}
+                      className={cn(
+                        "flex items-center justify-center rounded-lg border px-2 py-2 text-sm transition",
+                        active
+                          ? "border-parchment-cream bg-parchment-cream text-ink-black"
+                          : "border-transparent text-parchment-cream/64 hover:border-parchment-cream/25 hover:text-parchment-cream"
+                      )}
+                    >
+                      <Icon className="size-4" />
+                    </Link>
+                  );
+                })}
+              </div>
+            ) : managementOpen ? (
+              <div className="mt-1.5 space-y-1 pl-2">
+                {managementNav.map((item) => {
+                  const Icon = item.icon;
+                  const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+                  return (
+                    <Link
+                      key={item.href}
+                      href={item.href}
+                      aria-label={item.label}
+                      title={item.label}
+                      className={cn(
+                        "flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm transition",
+                        active
+                          ? "border-parchment-cream bg-parchment-cream text-ink-black"
+                          : "border-transparent text-parchment-cream/64 hover:border-parchment-cream/25 hover:text-parchment-cream"
+                      )}
+                    >
+                      <Icon className="size-4" />
+                      {item.label}
+                    </Link>
+                  );
+                })}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </nav>
       <div className={cn("space-y-2 border-t border-parchment-cream/15 py-3 text-xs text-parchment-cream/60", collapsed ? "px-2 text-center" : "px-3")}>
         <button
