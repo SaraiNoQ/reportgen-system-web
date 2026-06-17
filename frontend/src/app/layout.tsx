@@ -6,7 +6,10 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "智能检测报告生成系统",
-  description: "面向机床检测原始记录解析与报告编制的大前端原型"
+  description: "面向机床检测原始记录解析与报告编制的大前端原型",
+  icons: {
+    icon: "/favicon.ico"
+  }
 };
 
 export default async function RootLayout({

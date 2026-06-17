@@ -15,7 +15,7 @@ export default function LoginPage() {
   const router = useRouter();
   const { login } = useAppContext();
   const [username, setUsername] = useState("zhanggong");
-  const [password, setPassword] = useState("report-demo");
+  const [password, setPassword] = useState("password123");
   const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");

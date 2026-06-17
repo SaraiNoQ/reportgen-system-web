@@ -1,8 +1,9 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   ChevronsLeft,
   ChevronsRight,
@@ -15,6 +16,7 @@ import {
   UploadCloud,
   Users
 } from "lucide-react";
+import { useAppContext } from "@/components/providers/app-provider";
 import { cn } from "@/lib/utils";
 
 const nav = [
@@ -37,6 +39,17 @@ export function Sidebar({
   onCollapsedChange: (collapsed: boolean) => void;
 }) {
   const pathname = usePathname();
+  const { user } = useAppContext();
+  const isAdmin = user?.role === "管理员";
+
+  const visibleManagementNav = useMemo(
+    () => managementNav.filter((item) => {
+      if (item.href === "/projects") return true;
+      return isAdmin;
+    }),
+    [isAdmin]
+  );
+
   const [managementOpen, setManagementOpen] = useState(pathname.startsWith("/projects") || pathname.startsWith("/system"));
 
   return (
@@ -45,12 +58,14 @@ export function Sidebar({
     >
       <div className={cn("border-b border-parchment-cream/15", collapsed ? "px-2 py-3" : "px-3.5 py-4")}>
         <Link href="/records" className={cn("flex items-center", collapsed ? "justify-center" : "gap-2.5")}>
-          <div className="grid size-8 shrink-0 place-items-center rounded-lg border border-parchment-cream/50">
-            <Settings className="size-4" />
-          </div>
-          <div className={cn("overflow-hidden whitespace-nowrap transition-[max-width,opacity] duration-200", collapsed ? "max-w-0 opacity-0" : "max-w-36 opacity-100")}>
-            <p className="serif text-lg leading-tight">智能检测报告</p>
-            <p className="text-xs uppercase tracking-[0.1em] text-parchment-cream/70">Generation</p>
+          <div className={cn("relative shrink-0 overflow-hidden rounded-lg border border-parchment-cream/50", collapsed ? "size-8" : "h-9 w-[152px]")}>
+            <Image
+              src="/logo-horizontal-cn.png"
+              alt="智能检测报告生成系统"
+              fill
+              className={collapsed ? "object-cover object-left" : "object-contain object-left"}
+              priority
+            />
           </div>
         </Link>
       </div>
@@ -99,7 +114,7 @@ export function Sidebar({
           </button>
           {collapsed ? (
             <div className="mt-1.5 space-y-1 border-t border-parchment-cream/10 pt-1.5">
-              {managementNav.map((item) => {
+              {visibleManagementNav.map((item) => {
                 const Icon = item.icon;
                 const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
                 return (
@@ -122,7 +137,7 @@ export function Sidebar({
             </div>
           ) : managementOpen ? (
             <div className="mt-1.5 space-y-1 pl-2">
-              {managementNav.map((item) => {
+              {visibleManagementNav.map((item) => {
                 const Icon = item.icon;
                 const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
                 return (

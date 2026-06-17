@@ -10,16 +10,10 @@ import { MetricCard } from "@/components/ui/metric-card";
 import { Pagination } from "@/components/ui/pagination";
 import { ProjectStatusBadge } from "@/components/ui/status-badge";
 import { DataTable, Td } from "@/components/ui/table";
-import type { Project, ProjectMetric } from "@/lib/types/domain";
+import { projectApi, systemApi } from "@/lib/services/api";
+import type { AppUser, CreateProjectRequest, Project, ProjectMetric, ProjectVisibility } from "@/lib/types/domain";
 
-const NEW_PROJECT_FORM = { name: "", owner: "" };
-const DELETED_PROJECTS_KEY = "report-generator.deleted-projects";
-
-type DeletedProjectRecord = {
-  project: Project;
-  deletedAt: string;
-  actor: string;
-};
+const NEW_PROJECT_FORM: CreateProjectRequest = { name: "", owner: "", visibility: "public", allowedUserIds: [] };
 
 function nowText() {
   const now = new Date();
@@ -35,27 +29,20 @@ function actionForProject(project: Project) {
 
 export function ProjectsClient({ metrics, projects: initialProjects }: { metrics: ProjectMetric[]; projects: Project[] }) {
   const [projects, setProjects] = useState(initialProjects);
+  const [users, setUsers] = useState<AppUser[]>([]);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("全部状态");
   const [toast, setToast] = useState("");
   const [showNewModal, setShowNewModal] = useState(false);
-  const [form, setForm] = useState({ ...NEW_PROJECT_FORM });
+  const [form, setForm] = useState<CreateProjectRequest>({ ...NEW_PROJECT_FORM });
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(5);
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    const raw = window.localStorage.getItem(DELETED_PROJECTS_KEY);
-    if (!raw) return;
-
-    try {
-      const deletedRecords = JSON.parse(raw) as DeletedProjectRecord[];
-      const deletedIds = new Set(deletedRecords.map((record) => record.project.id));
-      setProjects((current) => current.filter((project) => !deletedIds.has(project.id)));
-    } catch {
-      window.localStorage.removeItem(DELETED_PROJECTS_KEY);
-    }
+    systemApi.users().then(setUsers).catch(() => {});
   }, []);
 
   const filtered = useMemo(() => {
@@ -81,26 +68,44 @@ export function ProjectsClient({ metrics, projects: initialProjects }: { metrics
     if (page > totalPages) setPage(totalPages);
   }, [page, totalPages]);
 
-  function handleCreate() {
+  async function handleCreate() {
     if (!form.name.trim() || !form.owner.trim()) {
       setToast("请填写项目名称和负责人。");
       return;
     }
-    const ts = nowText();
-    const newProject: Project = {
-      id: `p${projects.length + 1}`,
-      name: form.name.trim(),
-      code: `PJT-${ts.replace(/[\s:]/g, "").slice(0, 12)}-${String(projects.length + 1).padStart(3, "0")}`,
-      type: "",
-      owner: form.owner.trim(),
-      status: "解析中",
-      progress: 0,
-      updatedAt: ts
-    };
-    setProjects((prev) => [newProject, ...prev]);
-    setForm({ ...NEW_PROJECT_FORM });
-    setShowNewModal(false);
-    setToast(`项目「${newProject.name}」已创建，状态为解析中。`);
+    setSaving(true);
+    try {
+      const created = await projectApi.create({
+        name: form.name.trim(),
+        owner: form.owner.trim(),
+        visibility: form.visibility,
+        allowedUserIds: form.visibility === "private" ? form.allowedUserIds ?? [] : [],
+      });
+      setProjects((prev) => [created, ...prev]);
+      setForm({ ...NEW_PROJECT_FORM });
+      setShowNewModal(false);
+      setToast(`项目「${created.name}」已创建。`);
+    } catch {
+      const ts = nowText();
+      const fallback: Project = {
+        id: `p-local-${Date.now()}`,
+        name: form.name.trim(),
+        code: `PJT-${ts.replace(/[\s:]/g, "").slice(0, 12)}-999`,
+        type: "",
+        owner: form.owner.trim(),
+        status: "解析中",
+        progress: 0,
+        visibility: form.visibility ?? "public",
+        allowedUserIds: form.visibility === "private" ? form.allowedUserIds ?? [] : [],
+        updatedAt: ts,
+      };
+      setProjects((prev) => [fallback, ...prev]);
+      setForm({ ...NEW_PROJECT_FORM });
+      setShowNewModal(false);
+      setToast(`Core API 暂不可用，已在前端 mock 中创建项目「${fallback.name}」。`);
+    } finally {
+      setSaving(false);
+    }
   }
 
   function openDeleteDialog(project: Project) {
@@ -113,25 +118,36 @@ export function ProjectsClient({ metrics, projects: initialProjects }: { metrics
     setDeleteConfirmText("");
   }
 
-  function handleDeleteProject() {
+  async function handleDeleteProject() {
     if (!deleteTarget || deleteConfirmText.trim() !== deleteTarget.code) return;
-    const record: DeletedProjectRecord = {
-      project: deleteTarget,
-      deletedAt: nowText(),
-      actor: "管理员",
-    };
-
+    setSaving(true);
     try {
-      const raw = window.localStorage.getItem(DELETED_PROJECTS_KEY);
-      const current = raw ? (JSON.parse(raw) as DeletedProjectRecord[]) : [];
-      window.localStorage.setItem(DELETED_PROJECTS_KEY, JSON.stringify([record, ...current.filter((item) => item.project.id !== deleteTarget.id)]));
+      await projectApi.delete(deleteTarget.id);
+      setProjects((current) => current.filter((p) => p.id !== deleteTarget.id));
+      setToast(`项目「${deleteTarget.name}」已删除。`);
     } catch {
-      // localStorage is optional for the mock traceability flow.
+      setProjects((current) => current.filter((p) => p.id !== deleteTarget.id));
+      setToast(`Core API 暂不可用，已在前端移除项目「${deleteTarget.name}」。`);
+    } finally {
+      setSaving(false);
+      closeDeleteDialog();
     }
+  }
 
-    setProjects((current) => current.filter((project) => project.id !== deleteTarget.id));
-    setToast(`项目「${deleteTarget.name}」已删除，日志管理中可查看并恢复。`);
-    closeDeleteDialog();
+  function toggleVisibility(visibility: ProjectVisibility) {
+    setForm((f) => ({ ...f, visibility, allowedUserIds: visibility === "public" ? [] : f.allowedUserIds }));
+  }
+
+  function toggleAllowedUser(userId: string) {
+    setForm((f) => {
+      const current = f.allowedUserIds ?? [];
+      return {
+        ...f,
+        allowedUserIds: current.includes(userId)
+          ? current.filter((id) => id !== userId)
+          : [...current, userId],
+      };
+    });
   }
 
   return (
@@ -140,7 +156,7 @@ export function ProjectsClient({ metrics, projects: initialProjects }: { metrics
         eyebrow="Project Management"
         title="任务看板"
         action={
-          <Button variant="primary" onClick={() => setShowNewModal(true)}>
+          <Button variant="primary" onClick={() => setShowNewModal(true)} disabled={saving}>
             <Plus className="size-4" />
             新建项目
           </Button>
@@ -208,8 +224,9 @@ export function ProjectsClient({ metrics, projects: initialProjects }: { metrics
                     type="button"
                     title="删除项目"
                     aria-label={`删除项目 ${project.name}`}
+                    disabled={saving}
                     onClick={() => openDeleteDialog(project)}
-                    className="focus-ring inline-flex size-8 items-center justify-center rounded-md border border-red-900/25 text-red-900 transition hover:border-red-950 hover:bg-red-950 hover:text-parchment-cream"
+                    className="focus-ring inline-flex size-8 items-center justify-center rounded-md border border-red-900/25 text-red-900 transition hover:border-red-950 hover:bg-red-950 hover:text-parchment-cream disabled:cursor-not-allowed disabled:opacity-45"
                   >
                     <Trash2 className="size-4" />
                   </button>
@@ -240,7 +257,7 @@ export function ProjectsClient({ metrics, projects: initialProjects }: { metrics
 
       {showNewModal ? (
         <div className="fixed inset-0 z-30 flex items-center justify-center bg-ink-black/35 p-4 backdrop-blur-sm" onClick={() => setShowNewModal(false)}>
-          <div className="w-full max-w-[420px] rounded-xl border border-ink-black bg-parchment-cream p-5 shadow-editorial" onClick={(e) => e.stopPropagation()}>
+          <div className="w-full max-w-[480px] rounded-xl border border-ink-black bg-parchment-cream p-5 shadow-editorial" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-start justify-between gap-3 border-b border-ink-black/15 pb-3">
               <div>
                 <p className="text-xs uppercase tracking-[0.12em] text-warm-stone">New Project</p>
@@ -259,10 +276,62 @@ export function ProjectsClient({ metrics, projects: initialProjects }: { metrics
                 <span className="mb-1.5 block text-sm text-graphite">负责人</span>
                 <Input className="w-full" placeholder="输入负责人姓名" value={form.owner} onChange={(e) => setForm((f) => ({ ...f, owner: e.target.value }))} />
               </label>
+              <fieldset>
+                <legend className="mb-1.5 block text-sm text-graphite">权限范围</legend>
+                <div className="flex gap-4">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="visibility"
+                      className="accent-ink-black"
+                      checked={form.visibility === "public"}
+                      onChange={() => toggleVisibility("public")}
+                    />
+                    <span className="text-sm">公开</span>
+                    <span className="text-xs text-warm-stone">（所有用户可见）</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="visibility"
+                      className="accent-ink-black"
+                      checked={form.visibility === "private"}
+                      onChange={() => toggleVisibility("private")}
+                    />
+                    <span className="text-sm">指定用户</span>
+                    <span className="text-xs text-warm-stone">（仅选中用户可见）</span>
+                  </label>
+                </div>
+              </fieldset>
+              {form.visibility === "private" && users.length > 0 ? (
+                <div className="rounded-lg border border-ink-black/15 p-3">
+                  <p className="mb-2 text-sm text-graphite">选择可访问的用户：</p>
+                  <div className="flex flex-wrap gap-2">
+                    {users.map((user) => (
+                      <label
+                        key={user.id}
+                        className={`inline-flex cursor-pointer items-center gap-1.5 rounded-full border px-3 py-1 text-sm transition ${
+                          (form.allowedUserIds ?? []).includes(user.id)
+                            ? "border-ink-black bg-ink-black text-parchment-cream"
+                            : "border-ink-black/20 text-graphite hover:border-ink-black/60"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          className="sr-only"
+                          checked={(form.allowedUserIds ?? []).includes(user.id)}
+                          onChange={() => toggleAllowedUser(user.id)}
+                        />
+                        {user.name}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
             </div>
             <div className="mt-5 flex justify-end gap-2 border-t border-ink-black/15 pt-4">
               <Button variant="ghost" onClick={() => setShowNewModal(false)}>取消</Button>
-              <Button variant="primary" onClick={handleCreate}>
+              <Button variant="primary" onClick={handleCreate} disabled={saving}>
                 <Plus className="size-4" />
                 创建项目
               </Button>

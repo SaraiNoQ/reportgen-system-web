@@ -36,6 +36,8 @@ class Settings(BaseSettings):
 
     ai_task_queue: str = "parse-jobs"
 
+    storage_backend: str = "mock"  # "mock" | "postgres"
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -13,12 +13,15 @@ import {
 import type {
   AppUser,
   AuthSession,
+  CreateProjectRequest,
   DetectedType,
   ExtractedField,
   OperationLog,
+  Project,
   RawFile,
   ReportSection,
-  SystemMessage
+  SystemMessage,
+  UpdateProjectRequest
 } from "@/lib/types/domain";
 
 const wait = async () => new Promise((resolve) => setTimeout(resolve, 120));
@@ -164,7 +167,19 @@ export const authApi = {
 
 export const projectApi = {
   async list() {
-    return withFallback(() => requestJson<typeof projects>("/projects"), projects);
+    return withFallback(() => requestJson<Project[]>("/projects"), projects as Project[]);
+  },
+  async get(projectId: string) {
+    return requestJson<Project>(`/projects/${projectId}`);
+  },
+  async create(payload: CreateProjectRequest) {
+    return postJson<Project>("/projects", payload);
+  },
+  async update(projectId: string, payload: UpdateProjectRequest) {
+    return patchJson<Project>(`/projects/${projectId}`, payload);
+  },
+  async delete(projectId: string) {
+    return deleteJson<{ project: Project }>(`/projects/${projectId}`);
   },
   async metrics() {
     return withFallback(() => requestJson<typeof projectMetrics>("/projects/metrics"), projectMetrics);
@@ -295,7 +310,7 @@ export const systemApi = {
   async users() {
     return withFallback(() => requestJson<typeof users>("/system/users"), users);
   },
-  createUser(payload: Pick<AppUser, "name" | "role" | "department" | "status">) {
+  createUser(payload: Pick<AppUser, "name" | "role" | "department" | "status"> & { password?: string }) {
     return postJson<AppUser>("/system/users", payload);
   },
   importUsers() {
@@ -307,19 +322,24 @@ export const systemApi = {
   updateUserStatus(userId: string, status: AppUser["status"]) {
     return patchJson<AppUser>(`/system/users/${userId}/status?status=${encodeURIComponent(status)}`, {});
   },
-  async logs(params?: { q?: string; module?: string; result?: OperationLog["result"] | "全部结果" }) {
+  deleteUser(userId: string) {
+    return deleteJson<AppUser>(`/system/users/${userId}`);
+  },
+  async logs(params?: { q?: string; module?: string; result?: OperationLog["result"] | "全部结果"; actor?: string }) {
     const query = new URLSearchParams();
     if (params?.q) query.set("q", params.q);
     if (params?.module && params.module !== "全部模块") query.set("module", params.module);
     if (params?.result && params.result !== "全部结果") query.set("result", params.result);
+    if (params?.actor) query.set("actor", params.actor);
     const suffix = query.size ? `?${query.toString()}` : "";
     return withFallback(() => requestJson<typeof logs>(`/system/logs${suffix}`), logs);
   },
-  exportLogs(params?: { q?: string; module?: string; result?: OperationLog["result"] | "全部结果" }) {
+  exportLogs(params?: { q?: string; module?: string; result?: OperationLog["result"] | "全部结果"; actor?: string }) {
     const query = new URLSearchParams();
     if (params?.q) query.set("q", params.q);
     if (params?.module && params.module !== "全部模块") query.set("module", params.module);
     if (params?.result && params.result !== "全部结果") query.set("result", params.result);
+    if (params?.actor) query.set("actor", params.actor);
     const suffix = query.size ? `?${query.toString()}` : "";
     return requestJson<{ fileName: string; rows: number; status: "ready" }>(`/system/logs/export${suffix}`);
   },

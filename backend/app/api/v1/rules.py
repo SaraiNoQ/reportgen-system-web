@@ -1,5 +1,8 @@
-from fastapi import APIRouter, HTTPException
+from typing import Annotated
 
+from fastapi import APIRouter, Depends, HTTPException
+
+from app.dependencies import Store, get_store
 from app.schemas.domain import (
     CreateRuleTemplateRequest,
     RuleTemplate,
@@ -9,23 +12,30 @@ from app.schemas.domain import (
     UpdateRuleFieldRequest,
     UpdateRuleTemplateRequest,
 )
-from app.services.mock_store import store
 
 router = APIRouter(prefix="/rules", tags=["rules"])
 
 
 @router.get("/templates", response_model=list[RuleTemplate])
-def list_rule_templates() -> list[RuleTemplate]:
+def list_rule_templates(
+    store: Annotated[Store, Depends(get_store)],
+) -> list[RuleTemplate]:
     return store.snapshot(store.rule_templates)
 
 
 @router.post("/templates", response_model=RuleTemplate)
-def create_rule_template(payload: CreateRuleTemplateRequest) -> RuleTemplate:
+def create_rule_template(
+    payload: CreateRuleTemplateRequest,
+    store: Annotated[Store, Depends(get_store)],
+) -> RuleTemplate:
     return store.create_rule_template(payload)
 
 
 @router.post("/templates/{template_id}/copy", response_model=RuleTemplate)
-def copy_rule_template(template_id: str) -> RuleTemplate:
+def copy_rule_template(
+    template_id: str,
+    store: Annotated[Store, Depends(get_store)],
+) -> RuleTemplate:
     template = store.copy_rule_template(template_id)
     if not template:
         raise HTTPException(status_code=404, detail="rule template not found")
@@ -33,7 +43,11 @@ def copy_rule_template(template_id: str) -> RuleTemplate:
 
 
 @router.patch("/templates/{template_id}", response_model=RuleTemplate)
-def update_rule_template(template_id: str, payload: UpdateRuleTemplateRequest) -> RuleTemplate:
+def update_rule_template(
+    template_id: str,
+    payload: UpdateRuleTemplateRequest,
+    store: Annotated[Store, Depends(get_store)],
+) -> RuleTemplate:
     template = store.update_rule_template(template_id, payload)
     if not template:
         raise HTTPException(status_code=404, detail="rule template not found")
@@ -41,7 +55,10 @@ def update_rule_template(template_id: str, payload: UpdateRuleTemplateRequest) -
 
 
 @router.get("/templates/{template_id}/versions", response_model=RuleVersionsResponse)
-def list_rule_template_versions(template_id: str) -> RuleVersionsResponse:
+def list_rule_template_versions(
+    template_id: str,
+    store: Annotated[Store, Depends(get_store)],
+) -> RuleVersionsResponse:
     if not any(template.id == template_id for template in store.rule_templates):
         raise HTTPException(status_code=404, detail="rule template not found")
     return RuleVersionsResponse(versions=store.snapshot(store.get_rule_versions(template_id)))
@@ -52,6 +69,7 @@ def update_rule_field(
     template_id: str,
     field_id: str,
     payload: UpdateRuleFieldRequest,
+    store: Annotated[Store, Depends(get_store)],
 ) -> RuleTemplate:
     template = store.update_rule_field(template_id, field_id, payload)
     if not template:
@@ -60,7 +78,10 @@ def update_rule_field(
 
 
 @router.post("/save", response_model=SaveRuleResponse)
-def save_rule(payload: SaveRuleRequest) -> SaveRuleResponse:
+def save_rule(
+    payload: SaveRuleRequest,
+    store: Annotated[Store, Depends(get_store)],
+) -> SaveRuleResponse:
     message, template = store.save_rule(payload)
     if not template:
         raise HTTPException(status_code=404, detail=message)

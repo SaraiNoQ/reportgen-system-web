@@ -1,5 +1,8 @@
-from fastapi import APIRouter, HTTPException
+from typing import Annotated
 
+from fastapi import APIRouter, Depends, HTTPException
+
+from app.dependencies import Store, get_store
 from app.schemas.domain import (
     AddManualFieldRequest,
     ExtractedField,
@@ -14,43 +17,59 @@ from app.schemas.domain import (
     UploadResponse,
     UpsertFieldRequest,
 )
-from app.services.mock_store import store
 
 router = APIRouter(prefix="/records", tags=["records"])
 
 
 @router.get("/files", response_model=list[RawFile])
-def list_files() -> list[RawFile]:
+def list_files(
+    store: Annotated[Store, Depends(get_store)],
+) -> list[RawFile]:
     return store.snapshot(store.raw_files)
 
 
 @router.get("/parse-timeline", response_model=list[ParseEvent])
-def default_parse_timeline() -> list[ParseEvent]:
+def default_parse_timeline(
+    store: Annotated[Store, Depends(get_store)],
+) -> list[ParseEvent]:
     return store.snapshot(store.default_parse_events)
 
 
 @router.get("/files/{file_id}/parse-events", response_model=list[ParseEvent])
-def file_parse_events(file_id: str) -> list[ParseEvent]:
+def file_parse_events(
+    file_id: str,
+    store: Annotated[Store, Depends(get_store)],
+) -> list[ParseEvent]:
     return store.snapshot(store.parse_events.get(file_id, []))
 
 
 @router.get("/fields", response_model=list[ExtractedField])
-def default_fields() -> list[ExtractedField]:
+def default_fields(
+    store: Annotated[Store, Depends(get_store)],
+) -> list[ExtractedField]:
     return store.snapshot(store.base_fields)
 
 
 @router.get("/fields-by-file", response_model=dict[str, list[ExtractedField]])
-def fields_by_file() -> dict[str, list[ExtractedField]]:
+def fields_by_file(
+    store: Annotated[Store, Depends(get_store)],
+) -> dict[str, list[ExtractedField]]:
     return store.snapshot(store.fields_by_file)
 
 
 @router.get("/files/{file_id}/fields", response_model=list[ExtractedField])
-def file_fields(file_id: str) -> list[ExtractedField]:
+def file_fields(
+    file_id: str,
+    store: Annotated[Store, Depends(get_store)],
+) -> list[ExtractedField]:
     return store.snapshot(store.fields_by_file.get(file_id, []))
 
 
 @router.post("/uploads", response_model=UploadResponse)
-def create_uploads(payload: UploadRequest) -> UploadResponse:
+def create_uploads(
+    payload: UploadRequest,
+    store: Annotated[Store, Depends(get_store)],
+) -> UploadResponse:
     created = store.upload_files(payload.files)
     return UploadResponse(
         files=created,
@@ -60,7 +79,10 @@ def create_uploads(payload: UploadRequest) -> UploadResponse:
 
 
 @router.post("/exports", response_model=RecordsExportResponse)
-def export_records(payload: RecordsExportRequest) -> RecordsExportResponse:
+def export_records(
+    payload: RecordsExportRequest,
+    store: Annotated[Store, Depends(get_store)],
+) -> RecordsExportResponse:
     file_name = store.export_records(payload.formats)
     return RecordsExportResponse(
         fileName=file_name,
@@ -70,7 +92,10 @@ def export_records(payload: RecordsExportRequest) -> RecordsExportResponse:
 
 
 @router.get("/files/{file_id}/preview", response_model=FilePreviewResponse)
-def preview_file(file_id: str) -> FilePreviewResponse:
+def preview_file(
+    file_id: str,
+    store: Annotated[Store, Depends(get_store)],
+) -> FilePreviewResponse:
     file = store.register_file_preview(file_id)
     if not file:
         raise HTTPException(status_code=404, detail="file not found")
@@ -82,7 +107,11 @@ def preview_file(file_id: str) -> FilePreviewResponse:
 
 
 @router.patch("/files/{file_id}/type", response_model=RawFile)
-def update_file_type(file_id: str, payload: UpdateFileTypeRequest) -> RawFile:
+def update_file_type(
+    file_id: str,
+    payload: UpdateFileTypeRequest,
+    store: Annotated[Store, Depends(get_store)],
+) -> RawFile:
     updated = store.update_file_type(file_id, payload.detectedType)
     if not updated:
         raise HTTPException(status_code=404, detail="file not found")
@@ -90,7 +119,11 @@ def update_file_type(file_id: str, payload: UpdateFileTypeRequest) -> RawFile:
 
 
 @router.patch("/files/{file_id}/status", response_model=RawFile)
-def update_file_status(file_id: str, payload: UpdateParseStatusRequest) -> RawFile:
+def update_file_status(
+    file_id: str,
+    payload: UpdateParseStatusRequest,
+    store: Annotated[Store, Depends(get_store)],
+) -> RawFile:
     updated = store.update_file_status(file_id, payload.parseStatus)
     if not updated:
         raise HTTPException(status_code=404, detail="file not found")
@@ -98,14 +131,22 @@ def update_file_status(file_id: str, payload: UpdateParseStatusRequest) -> RawFi
 
 
 @router.delete("/files/{file_id}")
-def delete_file(file_id: str) -> dict[str, bool]:
+def delete_file(
+    file_id: str,
+    store: Annotated[Store, Depends(get_store)],
+) -> dict[str, bool]:
     if not store.delete_file(file_id):
         raise HTTPException(status_code=404, detail="file not found")
     return {"ok": True}
 
 
 @router.patch("/files/{file_id}/fields/{field_id}", response_model=ExtractedField)
-def update_field(file_id: str, field_id: str, payload: UpsertFieldRequest) -> ExtractedField:
+def update_field(
+    file_id: str,
+    field_id: str,
+    payload: UpsertFieldRequest,
+    store: Annotated[Store, Depends(get_store)],
+) -> ExtractedField:
     field = store.upsert_field(
         file_id,
         field_id,
@@ -115,5 +156,9 @@ def update_field(file_id: str, field_id: str, payload: UpsertFieldRequest) -> Ex
 
 
 @router.post("/files/{file_id}/fields", response_model=ExtractedField)
-def add_manual_field(file_id: str, payload: AddManualFieldRequest) -> ExtractedField:
+def add_manual_field(
+    file_id: str,
+    payload: AddManualFieldRequest,
+    store: Annotated[Store, Depends(get_store)],
+) -> ExtractedField:
     return store.upsert_field(file_id, None, payload)

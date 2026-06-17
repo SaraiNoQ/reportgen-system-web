@@ -6,6 +6,7 @@ from itertools import count
 from pathlib import Path
 from typing import Any
 
+from app.core.security import hash_password
 from app.schemas.domain import (
     AddManualFieldRequest,
     AppUser,
@@ -30,6 +31,7 @@ from app.schemas.domain import (
     RuleTemplateVersion,
     SaveRuleRequest,
     SystemMessage,
+    UpdateProjectRequest,
     UpdateReportSectionRequest,
     UpdateRuleFieldRequest,
     UpdateRuleTemplateRequest,
@@ -41,8 +43,12 @@ from app.schemas.domain import (
 )
 
 
+def now_iso() -> str:
+    return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+
 def now_text() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M")
+    return now_iso()
 
 
 def now_time() -> str:
@@ -362,7 +368,8 @@ class MockStore:
                 role="编制员",
                 department="检测一部",
                 status="启用",
-                lastLogin="2024-05-20 10:05",
+                lastLogin="2024-05-20T10:05:00",
+                password_hash=hash_password("password123"),
             ),
             AppUser(
                 id="u2",
@@ -370,7 +377,8 @@ class MockStore:
                 role="审核员",
                 department="质量部",
                 status="启用",
-                lastLogin="2024-05-20 09:40",
+                lastLogin="2024-05-20T09:40:00",
+                password_hash=hash_password("password123"),
             ),
             AppUser(
                 id="u3",
@@ -378,7 +386,8 @@ class MockStore:
                 role="管理员",
                 department="系统管理",
                 status="启用",
-                lastLogin="2024-05-20 08:18",
+                lastLogin="2024-05-20T08:18:00",
+                password_hash=hash_password("password123"),
             ),
             AppUser(
                 id="u4",
@@ -386,7 +395,17 @@ class MockStore:
                 role="编制员",
                 department="检测二部",
                 status="禁用",
-                lastLogin="2024-05-10 15:20",
+                lastLogin="2024-05-10T15:20:00",
+                password_hash=hash_password("password123"),
+            ),
+            AppUser(
+                id="admin",
+                name="admin",
+                role="管理员",
+                department="系统管理",
+                status="启用",
+                lastLogin="2026-06-17T00:00:00",
+                password_hash="$2b$12$JZs1NRL8ZYbKaFGfGdafzufwiEyQakS6YHj.xhhLqD0tpi88q2h9a",
             ),
         ]
         self.user_preferences: list[UserPreference] = [
@@ -701,7 +720,7 @@ class MockStore:
             for field in self.base_fields
         ]
 
-    def create_project(self, payload: CreateProjectRequest) -> Project:
+    def create_project(self, payload: CreateProjectRequest, owner_id: str | None = None) -> Project:
         next_id = f"p{self._next_numeric_id('p', [project.id for project in self.projects])}"
         created_at = now_text()
         project = Project(
@@ -710,13 +729,39 @@ class MockStore:
             code=f"PJT-{datetime.now().strftime('%Y%m%d%H%M')}-{next_id[1:].zfill(3)}",
             type=payload.type.strip(),
             owner=payload.owner.strip(),
+            ownerId=owner_id,
             status="待上传",
             progress=0,
+            visibility=payload.visibility,
+            allowedUserIds=payload.allowedUserIds,
             updatedAt=created_at,
         )
         self.projects.insert(0, project)
         self.add_log("项目管理", "管理员", f"新建项目：{project.name}")
         return project
+
+    def list_projects_for_user(self, user_id: str, role: str) -> list[Project]:
+        if role == "管理员":
+            return self.snapshot(self.projects)
+        return self.snapshot([
+            p for p in self.projects
+            if p.visibility == "public"
+            or p.ownerId == user_id
+            or user_id in p.allowedUserIds
+        ])
+
+    def update_project(
+        self, project_id: str, payload: UpdateProjectRequest, user_id: str, role: str
+    ) -> Project | None:
+        for index, project in enumerate(self.projects):
+            if project.id != project_id:
+                continue
+            changes = payload.model_dump(exclude_none=True)
+            updated = project.model_copy(update=changes)
+            self.projects[index] = updated
+            self.add_log("项目管理", "管理员", f"编辑项目：{updated.name}")
+            return updated
+        return None
 
     def delete_project(self, project_id: str, actor: str = "管理员") -> DeletedProjectRecord | None:
         project = next((item for item in self.projects if item.id == project_id), None)
@@ -768,7 +813,7 @@ class MockStore:
                 actor=actor,
                 action=action,
                 result=result,
-                time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                time=now_iso(),
             ),
         )
         self.save_all()
@@ -780,7 +825,7 @@ class MockStore:
         aliases = {
             "zhanggong": "u1",
             "ligong": "u2",
-            "admin": "u3",
+            "admin": "admin",
             "zhaogong": "u4",
         }
         normalized = account.strip().lower()
@@ -819,6 +864,8 @@ class MockStore:
         self.save_all()
 
     def create_user(self, payload: CreateUserRequest) -> AppUser:
+        if any(u.name == payload.name for u in self.users):
+            raise ValueError(f"用户名「{payload.name}」已存在，请使用不同的用户名。")
         user = AppUser(
             id=f"u{next(self._user_ids)}",
             name=payload.name,
@@ -826,6 +873,7 @@ class MockStore:
             department=payload.department,
             status=payload.status,
             lastLogin="尚未登录",
+            password_hash=hash_password(payload.password) if payload.password else None,
         )
         self.users.insert(0, user)
         self.user_preferences.insert(0, UserPreference(userId=user.id, currentProjectId=None))
@@ -900,11 +948,22 @@ class MockStore:
             self.add_log("用户管理", "管理员", f"{status}用户：{user.name}", "警告")
         return user
 
+    def delete_user(self, user_id: str) -> AppUser | None:
+        user = next((u for u in self.users if u.id == user_id), None)
+        if not user:
+            return None
+        self.users = [u for u in self.users if u.id != user_id]
+        self.user_preferences = [p for p in self.user_preferences if p.userId != user_id]
+        self.add_log("用户管理", "管理员", f"删除用户：{user.name}", "警告")
+        self.save_all()
+        return user
+
     def filter_logs(
         self,
         q: str | None = None,
         module: str | None = None,
         result: LogResult | None = None,
+        actor: str | None = None,
     ) -> list[OperationLog]:
         keyword = q.strip().lower() if q else ""
         filtered = self.logs
@@ -912,6 +971,8 @@ class MockStore:
             filtered = [log for log in filtered if log.module == module]
         if result and result != "全部结果":
             filtered = [log for log in filtered if log.result == result]
+        if actor:
+            filtered = [log for log in filtered if log.actor == actor]
         if keyword:
             filtered = [
                 log
@@ -1049,7 +1110,7 @@ class MockStore:
                 parts.append("1")
             next_version = f"v{'.'.join(parts)}"
             updated = template.model_copy(
-                update={"version": next_version, "updatedAt": now_text()[:10]}
+                update={"version": next_version, "updatedAt": now_iso()[:10]}
             )
             self.rule_templates[index] = updated
             self.rule_template_versions.insert(
@@ -1060,7 +1121,7 @@ class MockStore:
                     version=next_version,
                     label=f"{next_version} 生效中",
                     status="生效中",
-                    createdAt=now_text()[:10],
+                    createdAt=now_iso()[:10],
                     actor="管理员",
                 ),
             )
@@ -1086,7 +1147,7 @@ class MockStore:
             category=payload.category,
             name=payload.name,
             version="v1.0.0",
-            updatedAt=now_text()[:10],
+            updatedAt=now_iso()[:10],
             fields=fields,
         )
         self.rule_templates.insert(0, template)
@@ -1129,7 +1190,7 @@ class MockStore:
             if template.id != template_id:
                 continue
             changes = payload.model_dump(exclude_none=True)
-            updated = template.model_copy(update={**changes, "updatedAt": now_text()[:10]})
+            updated = template.model_copy(update={**changes, "updatedAt": now_iso()[:10]})
             self.rule_templates[index] = updated
             self.add_log("规则配置", "管理员", f"编辑规则模板：{updated.name}")
             return updated
@@ -1166,7 +1227,7 @@ class MockStore:
                 return None
 
             updated_template = template.model_copy(
-                update={"fields": updated_fields, "updatedAt": now_text()[:10]}
+                update={"fields": updated_fields, "updatedAt": now_iso()[:10]}
             )
             self.rule_templates[template_index] = updated_template
             self.add_log("规则配置", "管理员", f"编辑字段定义：{field_name}")

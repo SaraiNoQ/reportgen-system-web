@@ -1,5 +1,8 @@
-from fastapi import APIRouter, HTTPException
+from typing import Annotated
 
+from fastapi import APIRouter, Depends, HTTPException
+
+from app.dependencies import Store, get_store
 from app.schemas.domain import (
     AddReportSectionRequest,
     DraftResponse,
@@ -18,18 +21,21 @@ from app.schemas.domain import (
     SubmitReportResponse,
     UpdateReportSectionRequest,
 )
-from app.services.mock_store import store
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
 
 @router.get("/sections", response_model=list[ReportSection])
-def list_sections() -> list[ReportSection]:
+def list_sections(
+    store: Annotated[Store, Depends(get_store)],
+) -> list[ReportSection]:
     return store.snapshot(store.report_sections)
 
 
 @router.get("/workspace", response_model=ReportWorkspaceResponse)
-def get_report_workspace() -> ReportWorkspaceResponse:
+def get_report_workspace(
+    store: Annotated[Store, Depends(get_store)],
+) -> ReportWorkspaceResponse:
     return ReportWorkspaceResponse(
         sections=store.snapshot(store.report_sections),
         versions=store.snapshot(store.report_versions),
@@ -39,7 +45,10 @@ def get_report_workspace() -> ReportWorkspaceResponse:
 
 
 @router.post("/generate", response_model=ReportGenerateResponse)
-def generate_report(_: ReportGenerateRequest) -> ReportGenerateResponse:
+def generate_report(
+    _: ReportGenerateRequest,
+    store: Annotated[Store, Depends(get_store)],
+) -> ReportGenerateResponse:
     sections = store.generate_report()
     version = store.report_versions[0]
     return ReportGenerateResponse(
@@ -54,17 +63,27 @@ def generate_report(_: ReportGenerateRequest) -> ReportGenerateResponse:
 
 
 @router.post("/sections", response_model=ReportSection)
-def add_section(payload: AddReportSectionRequest) -> ReportSection:
+def add_section(
+    payload: AddReportSectionRequest,
+    store: Annotated[Store, Depends(get_store)],
+) -> ReportSection:
     return store.add_report_section(payload.title, payload.content)
 
 
 @router.patch("/sections/order", response_model=list[ReportSection])
-def reorder_sections(payload: ReorderReportSectionsRequest) -> list[ReportSection]:
+def reorder_sections(
+    payload: ReorderReportSectionsRequest,
+    store: Annotated[Store, Depends(get_store)],
+) -> list[ReportSection]:
     return store.reorder_report_sections(payload.sectionIds)
 
 
 @router.patch("/sections/{section_id}", response_model=ReportSection)
-def update_section(section_id: str, payload: UpdateReportSectionRequest) -> ReportSection:
+def update_section(
+    section_id: str,
+    payload: UpdateReportSectionRequest,
+    store: Annotated[Store, Depends(get_store)],
+) -> ReportSection:
     section = store.update_report_section(section_id, payload)
     if not section:
         raise HTTPException(status_code=404, detail="section not found")
@@ -72,14 +91,21 @@ def update_section(section_id: str, payload: UpdateReportSectionRequest) -> Repo
 
 
 @router.delete("/sections/{section_id}")
-def delete_section(section_id: str) -> dict[str, bool]:
+def delete_section(
+    section_id: str,
+    store: Annotated[Store, Depends(get_store)],
+) -> dict[str, bool]:
     if not store.delete_report_section(section_id):
         raise HTTPException(status_code=404, detail="section not found or last section")
     return {"ok": True}
 
 
 @router.post("/sections/{section_id}/revision", response_model=DraftResponse)
-def upload_revision(section_id: str, payload: RevisionUploadRequest) -> DraftResponse:
+def upload_revision(
+    section_id: str,
+    payload: RevisionUploadRequest,
+    store: Annotated[Store, Depends(get_store)],
+) -> DraftResponse:
     version = store.upload_report_revision(section_id, payload.fileName)
     if not version:
         raise HTTPException(status_code=404, detail="section not found")
@@ -87,19 +113,27 @@ def upload_revision(section_id: str, payload: RevisionUploadRequest) -> DraftRes
 
 
 @router.post("/drafts", response_model=DraftResponse)
-def save_draft() -> DraftResponse:
+def save_draft(
+    store: Annotated[Store, Depends(get_store)],
+) -> DraftResponse:
     version = store.save_report_draft()
     return DraftResponse(version=version.label, versionEntry=version)
 
 
 @router.post("/exports", response_model=ExportResponse)
-def export_report(payload: ExportRequest) -> ExportResponse:
+def export_report(
+    payload: ExportRequest,
+    store: Annotated[Store, Depends(get_store)],
+) -> ExportResponse:
     delivery = store.export_report(payload.scope, payload.format)
     return ExportResponse(fileName=delivery.fileName, status="ready", delivery=delivery)
 
 
 @router.post("/previews", response_model=ReportPreviewResponse)
-def preview_report(payload: ReportPreviewRequest) -> ReportPreviewResponse:
+def preview_report(
+    payload: ReportPreviewRequest,
+    store: Annotated[Store, Depends(get_store)],
+) -> ReportPreviewResponse:
     file_name = store.register_report_preview(payload.scope, payload.sectionId)
     return ReportPreviewResponse(
         fileName=file_name,
@@ -109,7 +143,10 @@ def preview_report(payload: ReportPreviewRequest) -> ReportPreviewResponse:
 
 
 @router.post("/versions/rollback", response_model=RollbackResponse)
-def rollback_report(payload: RollbackRequest) -> RollbackResponse:
+def rollback_report(
+    payload: RollbackRequest,
+    store: Annotated[Store, Depends(get_store)],
+) -> RollbackResponse:
     version = store.rollback_report(payload.versionId, payload.label)
     return RollbackResponse(
         version=version,
@@ -119,6 +156,8 @@ def rollback_report(payload: RollbackRequest) -> RollbackResponse:
 
 
 @router.post("/submit", response_model=SubmitReportResponse)
-def submit_report() -> SubmitReportResponse:
+def submit_report(
+    store: Annotated[Store, Depends(get_store)],
+) -> SubmitReportResponse:
     store.submit_report()
     return SubmitReportResponse(ok=True, status="待审核")

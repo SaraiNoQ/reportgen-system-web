@@ -5,7 +5,8 @@
     "role": "编制员",
     "department": "检测一部",
     "status": "启用",
-    "lastLogin": "2026-06-13 20:10"
+    "lastLogin": "2026-06-17 09:39",
+    "password_hash": null
   },
   {
     "id": "u2",
@@ -13,7 +14,8 @@
     "role": "审核员",
     "department": "质量部",
     "status": "启用",
-    "lastLogin": "2024-05-20 09:40"
+    "lastLogin": "2024-05-20 09:40",
+    "password_hash": null
   },
   {
     "id": "u3",
@@ -21,7 +23,8 @@
     "role": "管理员",
     "department": "系统管理",
     "status": "启用",
-    "lastLogin": "2024-05-20 08:18"
+    "lastLogin": "2024-05-20 08:18",
+    "password_hash": null
   },
   {
     "id": "u4",
@@ -29,6 +32,16 @@
     "role": "编制员",
     "department": "检测二部",
     "status": "禁用",
-    "lastLogin": "2024-05-10 15:20"
+    "lastLogin": "2024-05-10 15:20",
+    "password_hash": null
+  },
+  {
+    "id": "admin",
+    "name": "admin",
+    "role": "管理员",
+    "department": "系统管理",
+    "status": "启用",
+    "lastLogin": "2026-06-17 00:00",
+    "password_hash": "$2b$12$JZs1NRL8ZYbKaFGfGdafzufwiEyQakS6YHj.xhhLqD0tpi88q2h9a"
   }
 ]

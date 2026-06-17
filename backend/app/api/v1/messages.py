@@ -3,8 +3,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.api.v1.auth import current_session
+from app.dependencies import Store, get_store
 from app.schemas.domain import AppUser, SystemMessage
-from app.services.mock_store import store
 
 router = APIRouter(prefix="/messages", tags=["messages"])
 CurrentSession = Annotated[
@@ -16,6 +16,7 @@ CurrentSession = Annotated[
 @router.get("", response_model=list[SystemMessage])
 def list_messages(
     _: CurrentSession,
+    store: Annotated[Store, Depends(get_store)],
 ) -> list[SystemMessage]:
     return store.snapshot(store.messages)
 
@@ -24,6 +25,7 @@ def list_messages(
 def mark_message_read(
     message_id: str,
     _: CurrentSession,
+    store: Annotated[Store, Depends(get_store)],
 ) -> SystemMessage:
     message = store.mark_message_read(message_id)
     if not message:
@@ -34,6 +36,7 @@ def mark_message_read(
 @router.patch("/read-all")
 def mark_all_messages_read(
     _: CurrentSession,
+    store: Annotated[Store, Depends(get_store)],
 ) -> dict[str, bool]:
     store.mark_all_messages_read()
     return {"ok": True}

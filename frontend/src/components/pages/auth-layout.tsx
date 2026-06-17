@@ -1,3 +1,4 @@
+import Image from "next/image";
 import type { ReactNode } from "react";
 import { Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -15,6 +16,15 @@ const flowMarks = ["login", "workspace", "recover"] as const;
 export function AuthLayout({ eyebrow, title, subtitle, activeStep, children }: AuthLayoutProps) {
   return (
     <main className="relative min-h-screen overflow-hidden bg-parchment-cream px-5 py-8 text-ink-black sm:px-8 lg:px-10">
+      <div className="absolute left-8 top-8 z-10 h-8 w-[136px]">
+        <Image
+          src="/logo-horizontal-cn.png"
+          alt="智能检测报告生成系统"
+          fill
+          className="object-contain object-left"
+          priority
+        />
+      </div>
       <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(rgba(0,0,0,0.035)_1px,transparent_1px),linear-gradient(90deg,rgba(0,0,0,0.035)_1px,transparent_1px)] bg-[size:48px_48px]" />
       <div className="pointer-events-none absolute -left-28 top-24 h-72 w-72 rounded-full bg-mint-wash/40 blur-3xl auth-drift" />
       <div className="pointer-events-none absolute -right-20 bottom-10 h-80 w-80 rounded-full bg-peach-wash/30 blur-3xl auth-drift auth-drift-delay" />

@@ -8,7 +8,7 @@ def test_system_and_auth_endpoints() -> None:
 
     login_response = client.post(
         "/api/v1/auth/login",
-        json={"username": "zhanggong", "password": "report-demo"},
+        json={"username": "zhanggong", "password": "password123"},
     )
     forgot_password_response = client.post(
         "/api/v1/auth/forgot-password",
@@ -150,14 +150,27 @@ def test_record_upload_and_field_update_endpoints() -> None:
 def test_project_create_delete_and_restore_endpoints() -> None:
     client = TestClient(app)
 
+    login_resp = client.post(
+        "/api/v1/auth/login",
+        json={"username": "zhanggong", "password": "password123"},
+    )
+    assert login_resp.status_code == 200
+    token = login_resp.json()["accessToken"]
+    headers = {"Authorization": f"Bearer {token}"}
+
     create_response = client.post(
         "/api/v1/projects",
         json={"name": "接口联调测试项目", "owner": "测试员", "type": "综合检测"},
+        headers=headers,
     )
     project = create_response.json()
-    delete_response = client.delete(f"/api/v1/projects/{project['id']}")
-    deleted_response = client.get("/api/v1/projects/deleted")
-    restore_response = client.post(f"/api/v1/projects/{project['id']}/restore", json={})
+    delete_response = client.delete(
+        f"/api/v1/projects/{project['id']}", headers=headers,
+    )
+    deleted_response = client.get("/api/v1/projects/deleted", headers=headers)
+    restore_response = client.post(
+        f"/api/v1/projects/{project['id']}/restore", json={}, headers=headers,
+    )
     projects_response = client.get("/api/v1/projects")
 
     assert create_response.status_code == 200

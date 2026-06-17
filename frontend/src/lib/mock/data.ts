@@ -25,8 +25,11 @@ export const projects: Project[] = [
     code: "PJT-20240520-001",
     type: "几何精度",
     owner: "张工",
+    ownerId: "u1",
     status: "解析中",
     progress: 60,
+    visibility: "public",
+    allowedUserIds: [],
     updatedAt: "2024-05-20 10:30"
   },
   {
@@ -35,8 +38,11 @@ export const projects: Project[] = [
     code: "PJT-20240519-002",
     type: "位置精度",
     owner: "李工",
+    ownerId: "u2",
     status: "待生成",
     progress: 80,
+    visibility: "public",
+    allowedUserIds: [],
     updatedAt: "2024-05-20 09:15"
   },
   {
@@ -47,6 +53,8 @@ export const projects: Project[] = [
     owner: "王工",
     status: "待审核",
     progress: 90,
+    visibility: "public",
+    allowedUserIds: [],
     updatedAt: "2024-05-19 16:45"
   },
   {
@@ -55,8 +63,11 @@ export const projects: Project[] = [
     code: "PJT-20240518-004",
     type: "几何精度",
     owner: "赵工",
+    ownerId: "u4",
     status: "待上传",
     progress: 0,
+    visibility: "private",
+    allowedUserIds: ["u1", "u3"],
     updatedAt: "2024-05-19 11:20"
   },
   {
@@ -67,6 +78,8 @@ export const projects: Project[] = [
     owner: "陈工",
     status: "已完成",
     progress: 100,
+    visibility: "public",
+    allowedUserIds: [],
     updatedAt: "2024-05-18 14:35"
   }
 ];

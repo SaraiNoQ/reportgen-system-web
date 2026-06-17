@@ -18,5 +18,25 @@
     "parseStatus": "解析成功",
     "detectedType": "未识别",
     "typeConfirmed": false
+  },
+  {
+    "id": "f3",
+    "name": "副本民族学期末复习提纲_核心考点整理版.docx",
+    "type": "Word",
+    "size": "54 KB",
+    "uploadedAt": "2026-06-17 09:45",
+    "parseStatus": "解析中",
+    "detectedType": "几何精度",
+    "typeConfirmed": false
+  },
+  {
+    "id": "f4",
+    "name": "文字文稿1.docx",
+    "type": "Word",
+    "size": "648 KB",
+    "uploadedAt": "2026-06-17 09:45",
+    "parseStatus": "解析中",
+    "detectedType": "几何精度",
+    "typeConfirmed": false
   }
 ]

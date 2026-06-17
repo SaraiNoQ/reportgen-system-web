@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Bell, Building2, Check, ChevronDown, LogOut, PanelLeftClose, Search } from "lucide-react";
+import { Bell, Building2, Check, ChevronDown, LogOut, PanelLeftClose, ScrollText, Search } from "lucide-react";
 import { useAppContext } from "@/components/providers/app-provider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/forms";
@@ -127,6 +127,14 @@ export function TopNav({
               消息 <span className="rounded-md bg-ink-black px-1.5 py-0.5 text-xs text-parchment-cream">{unreadCount}</span>
             </Button>
           </Link>
+          {user?.role !== "管理员" ? (
+            <Link href="/account?tab=logs">
+              <Button variant="ghost" aria-label="日志">
+                <ScrollText className="size-4" />
+                日志
+              </Button>
+            </Link>
+          ) : null}
           <Link href="/account?tab=profile">
             <Button variant="secondary">{user?.name ?? "用户"}</Button>
           </Link>

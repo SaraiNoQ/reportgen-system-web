@@ -1,4 +1,5 @@
 export type ProjectStatus = "解析中" | "待生成" | "待审核" | "待上传" | "已完成";
+export type ProjectVisibility = "public" | "private";
 
 export type Project = {
   id: string;
@@ -6,9 +7,30 @@ export type Project = {
   code: string;
   type: string;
   owner: string;
+  ownerId?: string | null;
   status: ProjectStatus;
   progress: number;
+  visibility: ProjectVisibility;
+  allowedUserIds: string[];
   updatedAt: string;
+};
+
+export type CreateProjectRequest = {
+  name: string;
+  owner: string;
+  type?: string;
+  visibility?: ProjectVisibility;
+  allowedUserIds?: string[];
+};
+
+export type UpdateProjectRequest = {
+  name?: string | null;
+  owner?: string | null;
+  type?: string | null;
+  visibility?: ProjectVisibility | null;
+  allowedUserIds?: string[] | null;
+  status?: ProjectStatus | null;
+  progress?: number | null;
 };
 
 export type DetectedType = "几何精度" | "位置精度" | "电气参数" | "力学性能" | "综合检测" | "未识别";

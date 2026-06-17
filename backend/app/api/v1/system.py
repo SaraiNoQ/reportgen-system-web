@@ -1,5 +1,8 @@
-from fastapi import APIRouter, HTTPException
+from typing import Annotated
 
+from fastapi import APIRouter, Depends, HTTPException
+
+from app.dependencies import Store, get_store
 from app.schemas.domain import (
     AppUser,
     CreateUserRequest,
@@ -12,35 +15,50 @@ from app.schemas.domain import (
     UpdateUserRequest,
     UserStatus,
 )
-from app.services.mock_store import store
 
 router = APIRouter(prefix="/system", tags=["system"])
 
 
 @router.get("/users", response_model=list[AppUser])
-def list_users() -> list[AppUser]:
+def list_users(
+    store: Annotated[Store, Depends(get_store)],
+) -> list[AppUser]:
     return store.snapshot(store.users)
 
 
 @router.post("/users", response_model=AppUser)
-def create_user(payload: CreateUserRequest) -> AppUser:
-    return store.create_user(payload)
+def create_user(
+    payload: CreateUserRequest,
+    store: Annotated[Store, Depends(get_store)],
+) -> AppUser:
+    try:
+        return store.create_user(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/users/import", response_model=ImportUsersResponse)
-def import_users() -> ImportUsersResponse:
+def import_users(
+    store: Annotated[Store, Depends(get_store)],
+) -> ImportUsersResponse:
     users = store.import_users()
     return ImportUsersResponse(users=users, imported=len(users))
 
 
 @router.get("/users/export", response_model=ExportUsersResponse)
-def export_users() -> ExportUsersResponse:
+def export_users(
+    store: Annotated[Store, Depends(get_store)],
+) -> ExportUsersResponse:
     rows = store.export_users()
     return ExportUsersResponse(fileName="系统用户清单.xlsx", rows=rows, status="ready")
 
 
 @router.patch("/users/{user_id}", response_model=AppUser)
-def update_user(user_id: str, payload: UpdateUserRequest) -> AppUser:
+def update_user(
+    user_id: str,
+    payload: UpdateUserRequest,
+    store: Annotated[Store, Depends(get_store)],
+) -> AppUser:
     user = store.update_user(user_id, payload)
     if not user:
         raise HTTPException(status_code=404, detail="user not found")
@@ -48,8 +66,23 @@ def update_user(user_id: str, payload: UpdateUserRequest) -> AppUser:
 
 
 @router.patch("/users/{user_id}/status", response_model=AppUser)
-def update_user_status(user_id: str, status: UserStatus) -> AppUser:
+def update_user_status(
+    user_id: str,
+    status: UserStatus,
+    store: Annotated[Store, Depends(get_store)],
+) -> AppUser:
     user = store.set_user_status(user_id, status)
+    if not user:
+        raise HTTPException(status_code=404, detail="user not found")
+    return user
+
+
+@router.delete("/users/{user_id}", response_model=AppUser)
+def delete_user(
+    user_id: str,
+    store: Annotated[Store, Depends(get_store)],
+) -> AppUser:
+    user = store.delete_user(user_id)
     if not user:
         raise HTTPException(status_code=404, detail="user not found")
     return user
@@ -57,15 +90,18 @@ def update_user_status(user_id: str, status: UserStatus) -> AppUser:
 
 @router.get("/logs", response_model=list[OperationLog])
 def list_logs(
+    store: Annotated[Store, Depends(get_store)],
     q: str | None = None,
     module: str | None = None,
     result: LogResult | None = None,
+    actor: str | None = None,
 ) -> list[OperationLog]:
-    return store.snapshot(store.filter_logs(q=q, module=module, result=result))
+    return store.snapshot(store.filter_logs(q=q, module=module, result=result, actor=actor))
 
 
 @router.get("/logs/export", response_model=ExportLogsResponse)
 def export_logs(
+    store: Annotated[Store, Depends(get_store)],
     q: str | None = None,
     module: str | None = None,
     result: LogResult | None = None,
@@ -76,7 +112,10 @@ def export_logs(
 
 
 @router.get("/logs/{log_id}", response_model=LogDetailResponse)
-def get_log_detail(log_id: str) -> LogDetailResponse:
+def get_log_detail(
+    log_id: str,
+    store: Annotated[Store, Depends(get_store)],
+) -> LogDetailResponse:
     log = store.get_log(log_id)
     if not log:
         raise HTTPException(status_code=404, detail="log not found")

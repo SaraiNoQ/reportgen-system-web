@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { Loader2, Plus, Save, X } from "lucide-react";
+import { Ban, CheckCircle, Eye, EyeOff, Loader2, Pencil, Plus, Save, Trash2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, SectionHeader } from "@/components/ui/card";
@@ -11,13 +11,14 @@ import { DataTable, Td } from "@/components/ui/table";
 import { systemApi } from "@/lib/services/api";
 import type { AppUser } from "@/lib/types/domain";
 
-type UserFormState = Pick<AppUser, "name" | "role" | "department" | "status">;
+type UserFormState = Pick<AppUser, "name" | "role" | "department" | "status"> & { password?: string };
 
 const EMPTY_USER_FORM: UserFormState = {
   name: "",
   role: "编制员",
   department: "",
   status: "启用",
+  password: "",
 };
 
 export function SystemUsersClient({ users: initialUsers }: { users: AppUser[] }) {
@@ -32,6 +33,10 @@ export function SystemUsersClient({ users: initialUsers }: { users: AppUser[] })
   const [formError, setFormError] = useState("");
   const [savingUser, setSavingUser] = useState(false);
   const [statusLoadingUserId, setStatusLoadingUserId] = useState<string | null>(null);
+  const [deleteLoadingUserId, setDeleteLoadingUserId] = useState<string | null>(null);
+  const [showPassword, setShowPassword] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<AppUser | null>(null);
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
 
@@ -64,6 +69,7 @@ export function SystemUsersClient({ users: initialUsers }: { users: AppUser[] })
     setUserForm(EMPTY_USER_FORM);
     setEditingUserId(null);
     setFormError("");
+    setShowPassword(false);
     setUserDialogMode("create");
   }
 
@@ -88,7 +94,7 @@ export function SystemUsersClient({ users: initialUsers }: { users: AppUser[] })
 
   async function handleSubmitUser(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const payload = {
+    const payload: UserFormState & { password?: string } = {
       ...userForm,
       name: userForm.name.trim(),
       department: userForm.department.trim(),
@@ -96,6 +102,11 @@ export function SystemUsersClient({ users: initialUsers }: { users: AppUser[] })
 
     if (!payload.name || !payload.department) {
       setFormError("请填写用户名和所属部门后再保存。");
+      return;
+    }
+
+    if (userDialogMode === "create" && users.some((u) => u.name === payload.name)) {
+      setFormError(`用户名「${payload.name}」已存在，请使用不同的用户名。`);
       return;
     }
 
@@ -107,11 +118,18 @@ export function SystemUsersClient({ users: initialUsers }: { users: AppUser[] })
         setPage(1);
         setNotice(`已新增用户「${created.name}」。`);
       } else if (userDialogMode === "edit" && editingUserId) {
-        const updated = await systemApi.updateUser(editingUserId, payload);
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        const { password: _pw, ...editPayload } = payload;
+        const updated = await systemApi.updateUser(editingUserId, editPayload);
         setUsers((current) => current.map((item) => (item.id === editingUserId ? updated : item)));
         setNotice(`已保存「${updated.name}」的用户信息。`);
       }
-    } catch {
+    } catch (error: unknown) {
+      if (error instanceof Error && error.message.includes("409")) {
+        setFormError(`用户名「${payload.name}」已存在，请使用不同的用户名。`);
+        setSavingUser(false);
+        return;
+      }
       if (userDialogMode === "create") {
         const created: AppUser = {
           id: `usr-local-${Date.now()}`,
@@ -149,6 +167,33 @@ export function SystemUsersClient({ users: initialUsers }: { users: AppUser[] })
     }
   }
 
+  function openDeleteDialog(user: AppUser) {
+    setDeleteTarget(user);
+    setDeleteConfirmText("");
+  }
+
+  function closeDeleteDialog() {
+    setDeleteTarget(null);
+    setDeleteConfirmText("");
+  }
+
+  async function handleDeleteUser() {
+    if (!deleteTarget || deleteConfirmText.trim() !== deleteTarget.name) return;
+    setDeleteLoadingUserId(deleteTarget.id);
+    try {
+      await systemApi.deleteUser(deleteTarget.id);
+      setUsers((current) => current.filter((u) => u.id !== deleteTarget.id));
+      setNotice(`已删除用户「${deleteTarget.name}」。`);
+    } catch {
+      setNotice("删除用户接口暂不可用，请确认 Core API 服务状态。");
+    } finally {
+      setDeleteLoadingUserId(null);
+      closeDeleteDialog();
+    }
+  }
+
+  const isActionDisabled = Boolean(statusLoadingUserId) || Boolean(deleteLoadingUserId);
+
   return (
     <>
       <SectionHeader
@@ -178,8 +223,15 @@ export function SystemUsersClient({ users: initialUsers }: { users: AppUser[] })
             <option>禁用</option>
           </Select>
         </div>
-        <DataTable headers={["用户名", "角色", "所属部门", "账号状态", "最近登录", "操作"]}>
-          {pagedUsers.map((user) => (
+        <DataTable
+          headers={["用户名", "角色", "所属部门", "账号状态", "最近登录", "操作"]}
+          columns={["20%", "12%", "18%", "12%", "20%", "18%"]}
+        >
+          {pagedUsers.map((user) => {
+            const ToggleIcon = user.status === "启用" ? Ban : CheckCircle;
+            const toggleLabel = user.status === "启用" ? "禁用" : "启用";
+            const isLoading = statusLoadingUserId === user.id || deleteLoadingUserId === user.id;
+            return (
             <tr key={user.id}>
               <Td>{user.name}</Td>
               <Td>{user.role}</Td>
@@ -187,20 +239,46 @@ export function SystemUsersClient({ users: initialUsers }: { users: AppUser[] })
               <Td><Badge tone={user.status === "启用" ? "success" : "danger"}>{user.status}</Badge></Td>
               <Td>{user.lastLogin}</Td>
               <Td>
-                <div className="flex gap-3">
-                  <button className="underline underline-offset-4 disabled:cursor-not-allowed disabled:opacity-45" disabled={Boolean(statusLoadingUserId)} onClick={() => openEditDialog(user)}>编辑</button>
+                <div className="flex items-center justify-center gap-2">
                   <button
-                    className="inline-flex items-center gap-1 text-graphite underline underline-offset-4 disabled:cursor-not-allowed disabled:opacity-45"
-                    disabled={Boolean(statusLoadingUserId)}
-                    onClick={() => handleToggleStatus(user)}
+                    type="button"
+                    title="编辑"
+                    aria-label={`编辑用户 ${user.name}`}
+                    disabled={isActionDisabled}
+                    onClick={() => openEditDialog(user)}
+                    className="focus-ring inline-flex size-8 items-center justify-center rounded-md border border-ink-black/20 text-ink-black transition hover:border-ink-black hover:bg-ink-black hover:text-parchment-cream disabled:cursor-not-allowed disabled:opacity-45"
                   >
-                    {statusLoadingUserId === user.id ? <Loader2 className="size-3.5 animate-spin" /> : null}
-                    {statusLoadingUserId === user.id ? "处理中" : user.status === "启用" ? "禁用" : "启用"}
+                    <Pencil className="size-4" />
+                  </button>
+                  <button
+                    type="button"
+                    title={toggleLabel}
+                    aria-label={`${toggleLabel}用户 ${user.name}`}
+                    disabled={isActionDisabled}
+                    onClick={() => handleToggleStatus(user)}
+                    className="focus-ring inline-flex size-8 items-center justify-center rounded-md border border-ink-black/20 text-ink-black transition hover:border-ink-black hover:bg-ink-black hover:text-parchment-cream disabled:cursor-not-allowed disabled:opacity-45"
+                  >
+                    {isLoading && user.id === statusLoadingUserId ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <ToggleIcon className="size-4" />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    title="删除"
+                    aria-label={`删除用户 ${user.name}`}
+                    disabled={isActionDisabled}
+                    onClick={() => openDeleteDialog(user)}
+                    className="focus-ring inline-flex size-8 items-center justify-center rounded-md border border-red-900/25 text-red-900 transition hover:border-red-950 hover:bg-red-950 hover:text-parchment-cream disabled:cursor-not-allowed disabled:opacity-45"
+                  >
+                    <Trash2 className="size-4" />
                   </button>
                 </div>
               </Td>
             </tr>
-          ))}
+          );
+          })}
         </DataTable>
         <Pagination
           className="mt-4"
@@ -273,7 +351,7 @@ export function SystemUsersClient({ users: initialUsers }: { users: AppUser[] })
                   }
                   className="w-full"
                 >
-                  <option>管理员</option>
+                  {userDialogMode === "edit" ? <option>管理员</option> : null}
                   <option>编制员</option>
                   <option>审核员</option>
                 </Select>
@@ -294,6 +372,35 @@ export function SystemUsersClient({ users: initialUsers }: { users: AppUser[] })
               </label>
             </div>
 
+            {userDialogMode === "create" ? (
+              <div className="mt-4">
+                <label className="space-y-2">
+                  <span className="text-sm font-medium text-graphite">登录密码</span>
+                  <div className="relative">
+                    <Input
+                      className="w-full pr-10"
+                      type={showPassword ? "text" : "password"}
+                      value={userForm.password ?? ""}
+                      placeholder="留空则使用系统默认密码"
+                      disabled={savingUser}
+                      onChange={(event) =>
+                        setUserForm((current) => ({ ...current, password: event.target.value }))
+                      }
+                    />
+                    <button
+                      type="button"
+                      aria-label={showPassword ? "隐藏密码" : "显示密码"}
+                      className="absolute right-2 top-1/2 grid size-7 -translate-y-1/2 place-items-center rounded-full text-graphite transition hover:bg-ink-black/10"
+                      disabled={savingUser}
+                      onClick={() => setShowPassword((v) => !v)}
+                    >
+                      {showPassword ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+                    </button>
+                  </div>
+                </label>
+              </div>
+            ) : null}
+
             {formError ? (
               <p className="mt-4 rounded-md border border-red-900/25 bg-red-50 px-3 py-2 text-sm text-red-900">
                 {formError}
@@ -310,6 +417,62 @@ export function SystemUsersClient({ users: initialUsers }: { users: AppUser[] })
               </Button>
             </div>
           </form>
+        </div>
+      ) : null}
+
+      {deleteTarget ? (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-ink-black/35 p-4 backdrop-blur-sm"
+          onClick={closeDeleteDialog}
+        >
+          <div
+            className="w-full max-w-[560px] rounded-[14px] border border-ink-black bg-parchment-cream p-5 shadow-editorial"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="mono-label text-warm-stone">DELETE USER</p>
+                <h2 className="serif mt-1 text-3xl">确认删除用户</h2>
+                <p className="mt-2 text-sm text-graphite">
+                  删除后该用户将无法登录系统。请输入用户名称确认删除。
+                </p>
+              </div>
+              <button
+                type="button"
+                aria-label="关闭删除确认"
+                className="rounded-md p-1 transition hover:bg-ink-black/10"
+                onClick={closeDeleteDialog}
+              >
+                <X className="size-5" />
+              </button>
+            </div>
+            <div className="mt-5 rounded-lg border border-ink-black/15 p-3">
+              <p className="font-medium">{deleteTarget.name}</p>
+              <p className="mt-1 text-sm text-warm-stone">{deleteTarget.role} · {deleteTarget.department}</p>
+            </div>
+            <label className="mt-4 block space-y-2">
+              <span className="text-sm font-medium text-graphite">输入用户名：{deleteTarget.name}</span>
+              <Input
+                autoFocus
+                className="w-full"
+                value={deleteConfirmText}
+                placeholder="输入完整用户名后才能删除"
+                onChange={(event) => setDeleteConfirmText(event.target.value)}
+              />
+            </label>
+            <div className="mt-6 flex items-center justify-end gap-3 border-t border-ink-black/15 pt-4">
+              <Button type="button" variant="ghost" onClick={closeDeleteDialog}>取消</Button>
+              <Button
+                type="button"
+                variant="danger"
+                disabled={deleteConfirmText.trim() !== deleteTarget.name}
+                onClick={handleDeleteUser}
+              >
+                <Trash2 className="size-4" />
+                确认删除
+              </Button>
+            </div>
+          </div>
         </div>
       ) : null}
     </>

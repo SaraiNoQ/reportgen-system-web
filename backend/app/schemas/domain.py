@@ -3,6 +3,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 ProjectStatus = Literal["解析中", "待生成", "待审核", "待上传", "已完成"]
+ProjectVisibility = Literal["public", "private"]
 DetectedType = Literal["几何精度", "位置精度", "电气参数", "力学性能", "综合检测", "未识别"]
 ParseStatus = Literal["解析成功", "解析失败", "解析中"]
 ParseEventState = Literal["done", "active", "pending"]
@@ -26,8 +27,11 @@ class Project(BaseModel):
     code: str
     type: str
     owner: str
+    ownerId: str | None = None
     status: ProjectStatus
     progress: int
+    visibility: ProjectVisibility = "public"
+    allowedUserIds: list[str] = []
     updatedAt: str
 
 
@@ -35,6 +39,18 @@ class CreateProjectRequest(BaseModel):
     name: str
     owner: str
     type: str = ""
+    visibility: ProjectVisibility = "public"
+    allowedUserIds: list[str] = []
+
+
+class UpdateProjectRequest(BaseModel):
+    name: str | None = None
+    owner: str | None = None
+    type: str | None = None
+    visibility: ProjectVisibility | None = None
+    allowedUserIds: list[str] | None = None
+    status: ProjectStatus | None = None
+    progress: int | None = None
 
 
 class DeletedProjectRecord(BaseModel):
@@ -176,6 +192,7 @@ class AppUser(BaseModel):
     department: str
     status: UserStatus
     lastLogin: str
+    password_hash: str | None = None
 
 
 class UserPreference(BaseModel):
@@ -208,6 +225,7 @@ class CreateUserRequest(BaseModel):
     role: UserRole
     department: str
     status: UserStatus = "启用"
+    password: str | None = None
 
 
 class UpdateUserRequest(BaseModel):

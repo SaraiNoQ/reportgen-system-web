@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   CheckCheck,
   Clock3,
@@ -10,6 +10,7 @@ import {
   LogOut,
   Mail,
   MailOpen,
+  ScrollText,
   Search,
   ShieldCheck,
   UserRound
@@ -19,9 +20,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input, Select } from "@/components/ui/forms";
+import { Pagination } from "@/components/ui/pagination";
+import { DataTable, Td } from "@/components/ui/table";
 import { ProjectStatusBadge } from "@/components/ui/status-badge";
+import { systemApi } from "@/lib/services/api";
 import { cn } from "@/lib/utils";
-import type { SystemMessage } from "@/lib/types/domain";
+import type { OperationLog, SystemMessage } from "@/lib/types/domain";
 
 const messageTypes = ["全部类型", "成功", "提醒", "警告", "失败"] as const;
 const messageStates = ["全部消息", "未读", "已读"] as const;
@@ -48,6 +52,118 @@ function formatDateTime(value?: string) {
   });
 }
 
+function UserLogsView({ userName }: { userName: string }) {
+  const [logs, setLogs] = useState<OperationLog[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [keyword, setKeyword] = useState("");
+  const [module, setModule] = useState("全部模块");
+  const [result, setResult] = useState<OperationLog["result"] | "全部结果">("全部结果");
+  const [notice, setNotice] = useState("正在加载日志...");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+
+  const logModules = ["全部模块", "项目管理", "原始记录上传", "规则配置", "报告生成", "大模型解析", "登录认证", "用户管理", "系统"];
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      setLoading(true);
+      try {
+        const all = await systemApi.logs({});
+        if (!cancelled) {
+          const mine = all.filter((log) => log.actor === userName);
+          setLogs(mine);
+          setNotice(mine.length ? `共 ${mine.length} 条操作日志。` : "暂无操作日志。");
+        }
+      } catch {
+        if (!cancelled) setNotice("Core API 暂不可用，请确认后端服务状态。");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [userName]);
+
+  const visible = useMemo(() => {
+    const q = keyword.trim().toLowerCase();
+    return logs.filter((log) => {
+      const matchKw = !q || `${log.module}${log.action}`.toLowerCase().includes(q);
+      const matchMod = module === "全部模块" || log.module === module;
+      const matchRes = result === "全部结果" || log.result === result;
+      return matchKw && matchMod && matchRes;
+    });
+  }, [logs, keyword, module, result]);
+
+  useEffect(() => setPage(1), [keyword, module, result]);
+
+  const totalPages = Math.max(1, Math.ceil(visible.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const paged = useMemo(
+    () => visible.slice((currentPage - 1) * pageSize, currentPage * pageSize),
+    [visible, currentPage, pageSize]
+  );
+
+  if (loading) {
+    return (
+      <Card className="p-6 text-center text-sm text-warm-stone">
+        <ScrollText className="mx-auto mb-3 size-8 text-graphite/40" />
+        正在加载操作日志...
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="p-4">
+      <div className="mb-4 grid gap-3 md:grid-cols-[1fr_140px_140px]">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-warm-stone" />
+          <Input className="w-full pl-9" placeholder="搜索模块或动作" value={keyword} onChange={(event) => setKeyword(event.target.value)} />
+        </div>
+        <Select value={module} onChange={(event) => setModule(event.target.value)}>
+          {logModules.map((m) => (
+            <option key={m}>{m}</option>
+          ))}
+        </Select>
+        <Select value={result} onChange={(event) => setResult(event.target.value as typeof result)}>
+          <option>全部结果</option>
+          <option>成功</option>
+          <option>失败</option>
+          <option>警告</option>
+        </Select>
+      </div>
+      <DataTable headers={["模块", "动作", "结果", "时间"]}>
+        {paged.map((log) => (
+          <tr key={log.id}>
+            <Td>{log.module}</Td>
+            <Td>{log.action}</Td>
+            <Td>
+              <Badge tone={log.result === "成功" ? "success" : log.result === "失败" ? "danger" : "warning"}>
+                {log.result}
+              </Badge>
+            </Td>
+            <Td>{log.time}</Td>
+          </tr>
+        ))}
+      </DataTable>
+      {!visible.length ? (
+        <div className="rounded-lg border border-ink-black/15 px-4 py-10 text-center text-sm text-warm-stone">
+          暂无匹配日志
+        </div>
+      ) : null}
+      <Pagination
+        className="mt-4"
+        page={currentPage}
+        pageSize={pageSize}
+        total={visible.length}
+        onPageChange={setPage}
+        onPageSizeChange={setPageSize}
+      />
+      <p className="mt-3 text-sm text-warm-stone">{notice}</p>
+    </Card>
+  );
+}
+
 export function AccountClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -70,7 +186,9 @@ export function AccountClient() {
   const [markingMessageId, setMarkingMessageId] = useState<string | null>(null);
   const [loggingOut, setLoggingOut] = useState(false);
 
-  const activeTab = searchParams.get("tab") === "profile" ? "profile" : "messages";
+  const activeTab = searchParams.get("tab") === "profile" ? "profile"
+    : searchParams.get("tab") === "logs" ? "logs"
+    : "messages";
 
   const filteredMessages = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -82,7 +200,7 @@ export function AccountClient() {
     });
   }, [messages, query, state, type]);
 
-  function openTab(tab: "messages" | "profile") {
+  function openTab(tab: "messages" | "profile" | "logs") {
     router.replace(`/account?tab=${tab}`);
   }
 
@@ -139,6 +257,16 @@ export function AccountClient() {
             )}
           >
             用户信息
+          </button>
+          <button
+            type="button"
+            onClick={() => openTab("logs")}
+            className={cn(
+              "rounded-md px-3 py-1.5 text-sm transition",
+              activeTab === "logs" ? "bg-ink-black text-parchment-cream" : "text-graphite hover:bg-lavender-mist"
+            )}
+          >
+            日志
           </button>
         </div>
       </div>
@@ -241,7 +369,7 @@ export function AccountClient() {
             </div>
           </Card>
         </div>
-      ) : (
+      ) : activeTab === "profile" ? (
         <div className="grid gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
           <Card className="h-fit p-5">
             <div className="flex items-center gap-3">
@@ -328,6 +456,8 @@ export function AccountClient() {
             </div>
           </Card>
         </div>
+      ) : (
+        <UserLogsView userName={user?.name ?? ""} />
       )}
     </section>
   );

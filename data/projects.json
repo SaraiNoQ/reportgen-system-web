@@ -5,8 +5,11 @@
     "code": "PJT-202606130356-006",
     "type": "",
     "owner": "ce",
+    "ownerId": null,
     "status": "待上传",
     "progress": 0,
+    "visibility": "public",
+    "allowedUserIds": [],
     "updatedAt": "2026-06-13 03:56"
   },
   {
@@ -15,8 +18,11 @@
     "code": "PJT-20240520-001",
     "type": "几何精度",
     "owner": "张工",
+    "ownerId": "u1",
     "status": "待审核",
     "progress": 90,
+    "visibility": "public",
+    "allowedUserIds": [],
     "updatedAt": "2026-06-13 19:50"
   },
   {
@@ -25,8 +31,11 @@
     "code": "PJT-20240519-002",
     "type": "位置精度",
     "owner": "李工",
+    "ownerId": "u2",
     "status": "待生成",
     "progress": 80,
+    "visibility": "public",
+    "allowedUserIds": [],
     "updatedAt": "2024-05-20 09:15"
   },
   {
@@ -35,8 +44,11 @@
     "code": "PJT-20240519-003",
     "type": "电气参数",
     "owner": "王工",
+    "ownerId": null,
     "status": "待审核",
     "progress": 90,
+    "visibility": "public",
+    "allowedUserIds": [],
     "updatedAt": "2024-05-19 16:45"
   },
   {
@@ -45,8 +57,13 @@
     "code": "PJT-20240518-004",
     "type": "几何精度",
     "owner": "赵工",
+    "ownerId": "u4",
     "status": "待上传",
     "progress": 0,
+    "visibility": "private",
+    "allowedUserIds": [
+      "u1"
+    ],
     "updatedAt": "2024-05-19 11:20"
   },
   {
@@ -55,8 +72,11 @@
     "code": "PJT-20240518-005",
     "type": "综合检测",
     "owner": "陈工",
+    "ownerId": null,
     "status": "已完成",
     "progress": 100,
+    "visibility": "public",
+    "allowedUserIds": [],
     "updatedAt": "2024-05-18 14:35"
   }
 ]
