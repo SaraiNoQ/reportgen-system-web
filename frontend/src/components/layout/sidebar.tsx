@@ -58,14 +58,18 @@ export function Sidebar({
     >
       <div className={cn("border-b border-parchment-cream/15", collapsed ? "px-2 py-3" : "px-3.5 py-4")}>
         <Link href="/records" className={cn("flex items-center", collapsed ? "justify-center" : "gap-2.5")}>
-          <div className={cn("relative shrink-0 overflow-hidden rounded-lg border border-parchment-cream/50", collapsed ? "size-8" : "h-9 w-[152px]")}>
+          <div className="relative size-8 shrink-0 overflow-hidden rounded-lg border border-parchment-cream/50">
             <Image
-              src="/logo-horizontal-cn.png"
+              src="/favicon-preview.png"
               alt="智能检测报告生成系统"
               fill
-              className={collapsed ? "object-cover object-left" : "object-contain object-left"}
+              className="object-contain"
               priority
             />
+          </div>
+          <div className={cn("overflow-hidden whitespace-nowrap transition-[max-width,opacity] duration-200", collapsed ? "max-w-0 opacity-0" : "max-w-36 opacity-100")}>
+            <p className="serif text-lg leading-tight">智能检测报告</p>
+            <p className="text-xs uppercase tracking-[0.1em] text-parchment-cream/70">Generation</p>
           </div>
         </Link>
       </div>

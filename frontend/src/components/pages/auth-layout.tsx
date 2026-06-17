@@ -16,12 +16,12 @@ const flowMarks = ["login", "workspace", "recover"] as const;
 export function AuthLayout({ eyebrow, title, subtitle, activeStep, children }: AuthLayoutProps) {
   return (
     <main className="relative min-h-screen overflow-hidden bg-parchment-cream px-5 py-8 text-ink-black sm:px-8 lg:px-10">
-      <div className="absolute left-8 top-8 z-10 h-8 w-[136px]">
+      <div className="absolute left-8 top-8 z-10 size-8">
         <Image
-          src="/logo-horizontal-cn.png"
+          src="/favicon-preview.png"
           alt="智能检测报告生成系统"
           fill
-          className="object-contain object-left"
+          className="object-contain"
           priority
         />
       </div>
