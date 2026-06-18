@@ -44,6 +44,7 @@ export type RawFile = {
   parseStatus: "解析成功" | "解析失败" | "解析中";
   detectedType: DetectedType;
   typeConfirmed: boolean;
+  serverPath?: string | null;
 };
 
 export type ParseEvent = {
@@ -57,6 +58,7 @@ export type ExtractedField = {
   name: string;
   value: string;
   confidence: number;
+  section?: string;
 };
 
 export type RuleField = {
@@ -127,4 +129,39 @@ export type SystemMessage = {
   read: boolean;
   time: string;
   projectId?: string;
+};
+
+export type WorkflowJob = {
+  jobId: string;
+  status: "queued" | "running" | "succeeded" | "failed";
+  message: string;
+  runPaths: Record<string, string>;
+  result: Record<string, unknown> | null;
+  error: string | null;
+  progressEvents: Array<{ at: string; message: string }>;
+};
+
+export type RunStatus = {
+  runId: string;
+  status: string;
+  businessStatus: string;
+  stage: string;
+  message: string;
+  artifacts: Array<Record<string, unknown>>;
+  staleArtifacts: Array<unknown>;
+  issues: Array<unknown>;
+  outputs: Record<string, unknown>;
+};
+
+export type WorkflowProgressStage =
+  | "validate"
+  | "prepare"
+  | "extract"
+  | "generate";
+
+export type WorkflowProgress = {
+  stage: WorkflowProgressStage;
+  status: "pending" | "active" | "done" | "failed";
+  label: string;
+  meta: string;
 };

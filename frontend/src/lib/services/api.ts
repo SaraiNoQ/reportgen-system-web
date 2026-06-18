@@ -17,11 +17,14 @@ import type {
   DetectedType,
   ExtractedField,
   OperationLog,
+  ParseEvent,
   Project,
   RawFile,
   ReportSection,
+  RunStatus,
   SystemMessage,
-  UpdateProjectRequest
+  UpdateProjectRequest,
+  WorkflowJob
 } from "@/lib/types/domain";
 
 const wait = async () => new Promise((resolve) => setTimeout(resolve, 120));
@@ -229,6 +232,29 @@ export const recordApi = {
       fields: Record<string, ExtractedField[]>;
     }>("/records/uploads", { files });
   },
+  async uploadFilesWithContent(projectId: string, files: File[]) {
+    const form = new FormData();
+    form.append("projectId", projectId);
+    for (const file of files) {
+      form.append("files", file);
+    }
+    const headers = new Headers();
+    const auth = authHeader();
+    if (auth.Authorization) headers.set("Authorization", auth.Authorization);
+    const response = await fetch(`${API_BASE}/records/upload-files`, {
+      method: "POST",
+      headers,
+      body: form,
+    });
+    if (!response.ok) {
+      throw new CoreApiError(response.status, "/records/upload-files");
+    }
+    return response.json() as Promise<{
+      files: RawFile[];
+      parseEvents: Record<string, ParseEvent[]>;
+      fields: Record<string, ExtractedField[]>;
+    }>;
+  },
   updateFileType(fileId: string, detectedType: DetectedType) {
     return patchJson<RawFile>(`/records/files/${fileId}/type`, { detectedType });
   },
@@ -346,4 +372,40 @@ export const systemApi = {
   logDetail(logId: string) {
     return requestJson<{ log: OperationLog; detail: string }>(`/system/logs/${logId}`);
   }
+};
+
+export const genReportApi = {
+  /** Trigger a full report-generation workflow for the given project. */
+  runProjectWorkflow(projectId: string) {
+    return postJson<WorkflowJob>("/gen-report/projects/runs", { projectId });
+  },
+  /** Poll the state of a workflow job. */
+  getJob(jobId: string) {
+    return requestJson<WorkflowJob>(`/gen-report/jobs/${jobId}`);
+  },
+  /** Read the latest status of a report run. */
+  getRunStatus(runId: string) {
+    return requestJson<RunStatus>(`/gen-report/runs/${runId}/status`);
+  },
+  /** Get extracted fields from a run's fill_payloads. */
+  getRunFields(runId: string) {
+    return requestJson<{ fields: ExtractedField[]; sections: string[] }>(`/gen-report/runs/${runId}/fields`);
+  },
+  /** Set a field value in a run's fill payload. */
+  setRunField(runId: string, section: string, field: string, value: string) {
+    return postJson<{ status: string }>(`/gen-report/runs/${runId}/set-field`, { section, field, value });
+  },
+  /** Approve a run's review package. */
+  approveRun(runId: string) {
+    return postJson<{ status: string; approval: boolean; message: string }>(
+      `/gen-report/runs/${runId}/approve`, {}
+    );
+  },
+  /** Generate report documents for a run. */
+  generateRun(runId: string, section?: string | null) {
+    return postJson<{ status: string; sections: Record<string, string>; message: string }>(
+      `/gen-report/runs/${runId}/generate`,
+      section ? { section } : {}
+    );
+  },
 };
