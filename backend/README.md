@@ -9,6 +9,7 @@
 ```bash
 uv sync
 cp .env.example .env
+uv run alembic upgrade head  # STORAGE_BACKEND=postgres 时先同步表结构
 uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 

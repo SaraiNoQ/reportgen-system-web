@@ -331,6 +331,29 @@
 
 用途：原始记录上传页已上传文件列表。
 
+查询参数：
+
+- `projectId`：可选。传入后只返回该项目的文件；原始记录页面必须传当前项目 ID，确保每个项目独享文件空间。
+
+响应中的 `RawFile` 额外包含字段提取 run 持久化信息：
+
+```json
+{
+  "parseJobId": "job-abc",
+  "parseRunId": "report-p19",
+  "parseRunPath": "/.../genreport-workspaces/p19/work/report-p19",
+  "fieldsApproved": false,
+  "approvedAt": null
+}
+```
+
+返回文件前，Core API 会校验 `parseRunPath/status.json` 是否仍存在：
+
+- workspace 存在：保留当前解析状态，前端可继续展示字段、审核按钮和报告入口。
+- workspace 丢失：文件降级为 `"解析失败"`，追加解析事件“历史解析工作区不存在，请重新解析”。
+- `"解析成功"` 但缺少 `parseRunId` 或 `parseRunPath`：降级为 `"解析失败"`，提示重新解析。
+- `"解析中"` 但缺少 `parseJobId`：降级为 `"解析失败"`，提示缺少解析任务信息。
+
 ### `GET /records/parse-timeline`
 
 用途：页面初始化时的默认解析时间线。
@@ -341,11 +364,15 @@
 
 ### `GET /records/fields`
 
-用途：默认字段预览。
+用途：开发期基础字段定义。原始记录页面不使用该接口作为文件字段预览来源。
 
 ### `GET /records/fields-by-file`
 
-用途：按文件返回结构化字段集合。记录页初始化时优先使用该接口，保证页面字段来自 `data/fields_by_file.json`，而不是前端复制默认字段。
+用途：按文件返回结构化字段集合。记录页初始化时使用该接口，保证页面字段来自后端 `fields_by_file` 持久化数据，而不是前端复制默认字段。
+
+查询参数：
+
+- `projectId`：可选。传入后只返回该项目文件对应的字段集合。
 
 响应：
 
@@ -356,7 +383,8 @@
       "id": "f1-e1",
       "name": "检验项目",
       "value": "平面度",
-      "confidence": 98
+      "confidence": 98,
+      "section": "main"
     }
   ]
 }
@@ -376,12 +404,13 @@
 
 ### `POST /records/uploads`
 
-用途：批量上传确认后创建解析任务。当前前端只提交文件元数据；后续应改为先上传对象存储，再把对象 key、文件 hash、顺序和检测类型发送给 Core API。
+用途：批量上传确认后创建解析任务。文件元数据会写入当前项目空间，解析事件和字段集合由后端持久化。
 
 请求：
 
 ```json
 {
+  "projectId": "p1",
   "files": [
     {
       "name": "主轴精度检测记录.pdf",
@@ -392,6 +421,17 @@
   ]
 }
 ```
+
+### `POST /records/upload-files`
+
+用途：接收 multipart 文件内容，保存到后端上传目录，并创建当前项目下的文件元数据、初始解析事件和空字段集合。
+
+表单字段：
+
+- `projectId`：必填。当前项目 ID。
+- `files`：一个或多个文件。
+
+响应同 `POST /records/uploads`。
 
 响应：
 
@@ -666,7 +706,57 @@
 
 ### `POST /reports/exports`
 
-用途：导出 Word 或 PDF。当前返回开发期文件名并写入 `data/report_deliveries.json`；后续返回对象存储下载地址或异步导出任务。
+用途：导出 Word 或 PDF。
+
+普通页面导出仍可只传 `scope` 和 `format`，接口返回导出记录 JSON，并写入 `data/report_deliveries.json`：
+
+```json
+{
+  "scope": "整份报告",
+  "format": "word"
+}
+```
+
+报告生成工作流完成后，前端应把 `POST /gen-report/runs/{run_id}/generate` 响应中的 `final_report` 作为 `filePath` 传入本接口。此时接口返回文件下载流，而不是 JSON：
+
+```json
+{
+  "scope": "数字化工厂智能制造产线检验",
+  "format": "word",
+  "filePath": "/tmp/genreport-workspaces/p6/work/report-p6/final_report.docx"
+}
+```
+
+- `format=word`：直接下载 `filePath` 对应的最终 `.docx`。
+- `format=pdf`：后端优先复用同目录同名 `.pdf`；不存在时基于该 `.docx` 转换 PDF 到同目录后下载。部署环境安装 LibreOffice/`soffice` 时优先使用高保真转换；未安装时会使用后端内置的基础文本 PDF 兜底转换，保证可以导出和下载。
+- `filePath` 必须位于后端 gen-report workspace 内，不能传浏览器本地路径。
+- 成功导出后会写入 `report_deliveries`，并保存 `filePath`，后续可通过导出状态接口恢复“已可下载”的状态。
+
+### `POST /reports/export-status`
+
+用途：报告生成页导出前检查最终报告产物是否已经存在并登记到数据库。前端应先调用该接口判断 PDF 是否已生成；若 `exists=false`，再调用 `POST /reports/exports` 触发 Word 转 PDF 或导出登记。
+
+请求：
+
+```json
+{
+  "scope": "数字化工厂智能制造产线检验",
+  "format": "pdf",
+  "filePath": "/tmp/genreport-workspaces/p6/work/report-p6/final_report.docx"
+}
+```
+
+响应：
+
+```json
+{
+  "format": "pdf",
+  "exists": true,
+  "fileName": "数字化工厂智能制造产线检验_检测报告.pdf",
+  "filePath": "/tmp/genreport-workspaces/p6/work/report-p6/final_report.pdf",
+  "deliveryRecorded": true
+}
+```
 
 ### `POST /reports/previews`
 
@@ -686,5 +776,314 @@
 {
   "ok": true,
   "status": "待审核"
+}
+```
+
+## 报告生成工作流（gen-report）
+
+`/api/v1/gen-report/*` 是 gen-report 流水线的 HTTP 适配层。工作流按阶段执行：配置验证 → 工作区准备 → AI 字段提取 → 人工审核（可选） → 报告文档生成。完整工作流以异步 job 模式运行，前端通过轮询 `GET /jobs/{job_id}` 获取进度。
+
+### 工作流概览
+
+```
+POST /projects/extract (原始记录页触发字段提取)
+  → 从项目数据生成 manifest.yaml
+  → 启动后台 job
+  → 前端轮询 GET /jobs/{job_id}
+  → GET /runs/{run_id}/fields (获取字段)
+  → POST /runs/{run_id}/approve (人工审核通过)
+  → POST /runs/{run_id}/generate (报告生成页生成最终报告)
+
+或分步调用：
+  POST /manifests/validate → POST /manifests/prepare
+  → POST /runs (基于已有 manifest)
+  → GET /jobs/{job_id} (轮询)
+  → GET /runs/{run_id}/fields (获取结果)
+```
+
+### `POST /gen-report/projects/extract`
+
+用途：原始记录页面触发——从项目 ID 自动生成 manifest、创建工作区并只执行字段提取阶段。接口启动后会立刻把 `jobId / runId / runPath` 写回当前项目内处于 `"解析中"` 的文件；字段提取完成后继续写入提取字段和最终解析状态。前端应从 `RawFile.parseRunId` 获取后续审核和报告生成所需的 run_id，不再自行推导。
+
+请求：
+
+```json
+{
+  "projectId": "p19"
+}
+```
+
+响应同 `WorkflowJobResponse`（202 Accepted）。字段提取成功或进入可人工处理状态时，Core API 会把项目内 `parseStatus` 为 `"解析中"` 的文件更新为 `"解析成功"`，并写入提取字段、`parseJobId`、`parseRunId`、`parseRunPath`。用户在右侧字段预览中审核后，调用 `POST /gen-report/runs/{run_id}/approve`。
+
+### `POST /gen-report/projects/runs`
+
+用途：从项目 ID 自动生成 manifest、创建工作区并启动完整流水线（字段提取 + 报告生成）。当前产品前端的原始记录页不应使用该接口；字段已提取并审核后，报告生成页应调用 `POST /gen-report/runs/{run_id}/generate`。
+
+请求：
+
+```json
+{
+  "projectId": "p19"
+}
+```
+
+响应（202 Accepted）：
+
+```json
+{
+  "jobId": "d1941ee12081424b8be71c41c43178b7",
+  "status": "running",
+  "message": "Workflow started.",
+  "runPaths": {},
+  "result": null,
+  "error": null,
+  "progressEvents": [
+    { "at": "2026-06-18T07:13:14Z", "message": "Validate started" }
+  ]
+}
+```
+
+流程说明：
+
+1. 查找项目及对应规则模板、源文件
+2. `ManifestBuilder` 从 demo_project 拷贝模板/规则/schema，生成 `registry.yaml` 和 `manifest.yaml`
+3. 注册 run path，启动后台线程执行 `service.run_workflow()`
+4. 工作流成功时自动将 `parseStatus` 为 `"解析中"` 的文件更新为 `"解析成功"`，并写入提取字段
+
+### `POST /gen-report/runs`
+
+用途：基于已有 manifest 文件路径启动工作流（用于 CLI 集成或已有工作区场景）。
+
+请求：
+
+```json
+{
+  "manifestPath": "/path/to/manifest.yaml",
+  "mode": "full"
+}
+```
+
+`mode` 取值：`"full"`（完整流水线）或 `"staged"`（分步执行，预留）。响应同 `WorkflowJobResponse`（202 Accepted）。
+
+### `GET /gen-report/jobs/{job_id}`
+
+用途：轮询工作流 job 的当前状态和进度事件。前端每 2 秒轮询直到 `status` 变为 `"succeeded"` 或 `"failed"`。
+
+响应：
+
+```json
+{
+  "jobId": "d1941ee12081424b8be71c41c43178b7",
+  "status": "succeeded",
+  "message": "All 1 run(s) completed successfully.",
+  "runPaths": {
+    "report-p19": "/tmp/genreport-workspaces/p19/work/report-p19"
+  },
+  "result": {
+    "status": "ok",
+    "runs": [
+      { "run_id": "report-p19", "status": "generated", "run_path": "...", "message": "Report generated successfully." }
+    ],
+    "generated_count": 1,
+    "failed_count": 0,
+    "review_required_count": 0
+  },
+  "error": null,
+  "progressEvents": [
+    { "at": "2026-06-18T07:13:14Z", "message": "Validate started" },
+    { "at": "2026-06-18T07:13:14Z", "message": "Validate completed" },
+    { "at": "2026-06-18T07:23:12Z", "message": "Run report-p19: generate completed" }
+  ]
+}
+```
+
+状态说明：
+
+| status | 含义 |
+|---|---|
+| `queued` | 已入队，尚未开始 |
+| `running` | 执行中，持续产生 progressEvents |
+| `succeeded` | 所有 run 成功生成 |
+| `failed` | 所有 run 失败或需要人工处理，`error` 字段包含原因 |
+
+### `GET /gen-report/runs/{run_id}/status`
+
+用途：查看单个 report run 的详细状态，包括当前阶段、业务状态、产出物列表、问题和输出路径。
+
+响应：
+
+```json
+{
+  "runId": "report-p19",
+  "status": "generated",
+  "businessStatus": "已完成",
+  "stage": "generate",
+  "message": "Report generated successfully.",
+  "artifacts": [],
+  "staleArtifacts": [],
+  "issues": [],
+  "outputs": {
+    "finalReport": "/tmp/genreport-workspaces/p19/work/report-p19/final_report.docx"
+  }
+}
+```
+
+### `GET /gen-report/runs/{run_id}/fields`
+
+用途：读取指定 run 的提取字段列表。从 `fill_payloads/` 目录下所有 JSON 文件中汇总字段，每个字段包含 section、name、value、confidence 和 source。
+
+响应：
+
+```json
+{
+  "fields": [
+    {
+      "id": "report-p19-main-{{report_no}}",
+      "section": "main",
+      "name": "{{report_no}}",
+      "value": "W1250905-02",
+      "confidence": 95,
+      "source": "asset_library/images/..."
+    }
+  ],
+  "sections": ["geometry_precision", "main", "position_precision"]
+}
+```
+
+### `POST /gen-report/runs/{run_id}/set-field`
+
+用途：编辑指定 run 中某个 section 的填充字段值。修改会保留原始 evidence，记录 before/after 到 Edited Field Record。
+
+请求：
+
+```json
+{
+  "section": "main",
+  "field": "{{report_no}}",
+  "value": "W1250905-03"
+}
+```
+
+响应：
+
+```json
+{
+  "status": "ok",
+  "message": "Field updated.",
+  "section": "main",
+  "field": "{{report_no}}",
+  "before": "W1250905-02",
+  "after": "W1250905-03",
+  "evidence_preserved": true
+}
+```
+
+### `POST /gen-report/manifests/validate`
+
+用途：校验指定 manifest 文件的配置完整性（schema、模板、registry 引用是否有效）。
+
+请求：
+
+```json
+{
+  "manifestPath": "/path/to/manifest.yaml"
+}
+```
+
+响应：
+
+```json
+{
+  "status": "ok",
+  "valid": true,
+  "issues": [],
+  "message": "Configuration is valid."
+}
+```
+
+### `POST /gen-report/manifests/prepare`
+
+用途：基于 manifest 创建 run workspace，归档源文件，快照模板/规则/schema。
+
+请求：
+
+```json
+{
+  "manifestPath": "/path/to/manifest.yaml"
+}
+```
+
+响应包含 `status`（`"ok"` 或 `"error"`）、`message` 及 `runs` 列表，每个 run 包含 `run_id`、`status`、`run_path`。
+
+### `POST /gen-report/runs/{run_id}/extract`
+
+用途：对已准备的 workspace 执行 AI 字段提取（Main Agent + Item Agent）。
+
+请求：
+
+```json
+{
+  "section": null
+}
+```
+
+`section` 可选：传入 inspection item ID 可单独重跑某个附件的提取，不传则跑完整提取。
+
+### `POST /gen-report/runs/{run_id}/generate`
+
+用途：对已提取完成的 workspace 执行报告文档生成（Docx 模板填充 + 附件组装）。
+
+报告生成页应调用该接口生成最终报告，不应重复调用 `/gen-report/projects/runs` 一键完整工作流。服务重启后，Core API 会先根据绑定文件上的 `parseRunPath` 恢复 run workspace，再调用 gen-report。
+
+请求：
+
+```json
+{
+  "section": null
+}
+```
+
+`section` 可选：传入 inspection item ID 可只重生成单个章节，并标记 final report 为 stale。
+
+### `GET /gen-report/runs/{run_id}/review`
+
+用途：展示指定 run 的审核包（parsed sources、asset library、fill payloads、conversion issues、run log）。
+
+### `POST /gen-report/runs/{run_id}/approve`
+
+用途：审核通过指定 run，标记为可进入生成阶段。无 issues 的 clean run 可跳过审核直接生成。
+
+调用成功后，Core API 会找到绑定该 `run_id` 的原始文件并写入：
+
+- `fieldsApproved=true`
+- `approvedAt=<当前时间>`
+
+字段被编辑、手工录入或文件重新解析时，`fieldsApproved` 会重置为 `false`。
+
+### `POST /gen-report/runs/{run_id}/refresh-inputs`
+
+用途：从外部源刷新 workspace 的输入文件（源文档、模板、规则等），标记受影响的产出物为 stale。
+
+### `POST /gen-report/runs/{run_id}/open-output`
+
+用途：在桌面环境中打开指定 run 的输出文件（最终报告或 workspace 目录）。
+
+请求：
+
+```json
+{
+  "target": "final_report"
+}
+```
+
+`target` 取值：`"final_report"`（最终报告 docx）或 `"workspace"`（workspace 目录）。
+
+响应：
+
+```json
+{
+  "status": "ok",
+  "message": "Opened output.",
+  "path": "/tmp/genreport-workspaces/p19/work/report-p19/final_report.docx"
 }
 ```
