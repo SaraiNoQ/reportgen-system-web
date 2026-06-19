@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   AlertTriangle,
   ArrowRight,
+  Check,
   ChevronLeft,
   ChevronRight,
   CheckCircle2,
@@ -32,10 +33,37 @@ import { recordApi, genReportApi } from "@/lib/services/api";
 import type { DetectedType, ExtractedField, ParseEvent, RawFile, WorkflowJob, WorkflowProgress } from "@/lib/types/domain";
 import { cn } from "@/lib/utils";
 
-const templateRules = ["字段定义 34 项", "字段映射 18 条", "校验规则 12 条", "提示词版本 prompt-geo-v2.1"];
 const requiredFields = ["检验项目", "测量位置", "实测值", "标准值", "单位", "判定结果"];
+const RECORD_WORKFLOW_STORAGE_PREFIX = "report-generator.records.workflow.";
+const REQUIRED_FIELD_MATCHERS: Array<{ label: string; aliases: string[] }> = [
+  {
+    label: "检验项目",
+    aliases: ["检验项目", "inspection_item", "inspection_type", "basic_inspection_type", "summary_test_item"]
+  },
+  {
+    label: "测量位置",
+    aliases: ["测量位置", "measure_position", "inspection_location", "position_axis", "position_target"]
+  },
+  {
+    label: "实测值",
+    aliases: ["实测值", "actual_value", "position_measured", "position_error", "position_mean_error"]
+  },
+  {
+    label: "标准值",
+    aliases: ["标准值", "standard_value", "position_tolerance", "inspection_basis_text", "summary_requirement"]
+  },
+  {
+    label: "单位",
+    aliases: ["单位", "unit", "position_stroke_mm", "position_tolerance_um"]
+  },
+  {
+    label: "判定结果",
+    aliases: ["判定结果", "judgement", "judgment", "inspection_conclusion", "position_conclusion", "summary_conclusion"]
+  }
+];
 const FIELD_PREVIEW_LIMIT = 6;
 const EMPTY_EXTRACTED_FIELDS: ExtractedField[] = [];
+const EMPTY_PARSE_EVENTS: ParseEvent[] = [];
 const DETECTED_TYPE_OPTIONS: Array<{
   id: DetectedType;
   title: string;
@@ -77,6 +105,93 @@ type DropMarker = {
   position: "before" | "after";
 };
 
+type StoredRecordWorkflow = {
+  projectId: string;
+  jobId: string | null;
+  status: WorkflowJob["status"] | null;
+  activeRunId: string | null;
+  fieldsApproved?: boolean;
+  events: ParseEvent[];
+  activeParseFileId: string;
+  parseStartTime: string | null;
+  parseProgress: number;
+  updatedAt: string;
+};
+
+function workflowStorageKey(projectId: string) {
+  return `${RECORD_WORKFLOW_STORAGE_PREFIX}${projectId}`;
+}
+
+function readStoredWorkflow(projectId: string): StoredRecordWorkflow | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(workflowStorageKey(projectId));
+    return raw ? JSON.parse(raw) as StoredRecordWorkflow : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredWorkflow(projectId: string, snapshot: StoredRecordWorkflow) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(workflowStorageKey(projectId), JSON.stringify(snapshot));
+}
+
+function clearStoredWorkflow(projectId: string) {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(workflowStorageKey(projectId));
+}
+
+function isExtractionCompleteJob(job: WorkflowJob) {
+  const messages = [
+    job.message,
+    job.error,
+    ...(job.progressEvents ?? []).map((event) => event.message)
+  ].filter(Boolean).join("\n").toLowerCase();
+  return (
+    messages.includes("extract completed") ||
+    messages.includes("extraction completed") ||
+    messages.includes("need human handling") ||
+    messages.includes("review_required")
+  );
+}
+
+function isHumanReviewMessage(label: string) {
+  const normalized = label.toLowerCase();
+  return normalized.includes("need human handling") || normalized.includes("review_required");
+}
+
+function getCompletedExtractionRunFile(files: RawFile[]) {
+  return files.find((file) =>
+    file.parseStatus === "解析成功" &&
+    Boolean(file.parseRunId) &&
+    Boolean(file.parseRunPath)
+  );
+}
+
+function buildCompletedWorkflowEvents(events: ParseEvent[]) {
+  const completedEvents = events
+    .filter((event) => !isHumanReviewMessage(event.label))
+    .map((event) => ({ ...event, state: event.state === "active" ? "done" as const : event.state }));
+
+  return mergeParseEvents(completedEvents, [
+    { time: nowTime(), label: "字段提取完成", state: "done" },
+    { time: nowTime(), label: "结构化结果已写入字段库", state: "done" }
+  ]);
+}
+
+function mergeParseEvents(existing: ParseEvent[], incoming: ParseEvent[]) {
+  const seen = new Set(existing.map((event) => `${event.time}-${event.label}`));
+  const merged = [...existing];
+  for (const event of incoming) {
+    const key = `${event.time}-${event.label}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(event);
+  }
+  return merged;
+}
+
 function getQueueDropMarker(container: HTMLElement | null, clientY: number, draggingId?: string | null): DropMarker | null {
   const queueItems = Array.from(container?.querySelectorAll<HTMLElement>("[data-queue-item-id]") ?? []);
   const availableItems = queueItems.filter((queueItem) => queueItem.dataset.queueItemId !== draggingId);
@@ -115,13 +230,26 @@ function setFloatingDragImage(dataTransfer: DataTransfer, source: HTMLElement, c
   window.setTimeout(() => preview.remove(), 0);
 }
 
-function createFieldSet(fileId: string, sourceFields: ExtractedField[], fileIndex = 0) {
-  return sourceFields.map((field) => ({
-    ...field,
-    id: `${fileId}-${field.id}`,
-    value: fileIndex === 0 ? field.value : field.name === "测量位置" ? "待人工确认" : field.value,
-    confidence: fileIndex === 0 ? field.confidence : Math.max(72, field.confidence - 12)
-  }));
+function normalizeFieldToken(value: string) {
+  return value.replace(/[{}]/g, "").trim().toLowerCase();
+}
+
+function fieldMatchesAliases(field: ExtractedField, aliases: string[]) {
+  const name = normalizeFieldToken(field.name);
+  const id = normalizeFieldToken(field.id);
+  return aliases.some((alias) => {
+    const normalizedAlias = normalizeFieldToken(alias);
+    return name === normalizedAlias || id === normalizedAlias || name.includes(normalizedAlias) || id.includes(normalizedAlias);
+  });
+}
+
+function countRequiredReady(fields: ExtractedField[]) {
+  const filledFields = fields.filter((field) => field.value.trim());
+  const matchedCount = REQUIRED_FIELD_MATCHERS.filter(({ aliases }) =>
+    filledFields.some((field) => fieldMatchesAliases(field, aliases))
+  ).length;
+  if (matchedCount > 0) return matchedCount;
+  return Math.min(requiredFields.length, filledFields.length);
 }
 
 function getTone(status: RawFile["parseStatus"]) {
@@ -206,45 +334,25 @@ function isWordPreview(asset?: PreviewAsset | null) {
   );
 }
 
-function createParseEvents(file: RawFile): ParseEvent[] {
-  if (file.parseStatus === "解析成功") {
-    return [
-      { time: file.uploadedAt.slice(-5) + ":15", label: "开始解析文件", state: "done" },
-      { time: file.uploadedAt.slice(-5) + ":20", label: "OCR/结构化解析完成", state: "done" },
-      { time: file.uploadedAt.slice(-5) + ":30", label: "字段提取完成", state: "done" },
-      { time: file.uploadedAt.slice(-5) + ":45", label: "结构化结果已写入字段库", state: "done" }
-    ];
-  }
-
-  if (file.parseStatus === "解析失败") {
-    return [
-      { time: file.uploadedAt.slice(-5) + ":15", label: "开始解析文件", state: "done" },
-      { time: file.uploadedAt.slice(-5) + ":22", label: "表格边界识别失败，等待人工处理", state: "pending" }
-    ];
-  }
-
-  return [
-    { time: nowTime(), label: "上传完成，等待解析调度", state: "done" },
-    { time: nowTime(), label: "OCR/结构化解析中", state: "active" }
-  ];
-}
-
 export function RecordsClient({
   files,
-  events: initialEvents,
-  fields
+  fieldsByFile
 }: {
   files: RawFile[];
-  events: ParseEvent[];
-  fields: ExtractedField[];
+  fieldsByFile: Record<string, ExtractedField[]>;
 }) {
   const { currentProject } = useAppContext();
   const [uploaded, setUploaded] = useState(files);
   const [fieldSets, setFieldSets] = useState<Record<string, ExtractedField[]>>(() =>
-    Object.fromEntries(files.map((file, index) => [file.id, createFieldSet(file.id, fields, index)]))
+    Object.fromEntries(
+      files.map((file) => {
+        const fileFields = fieldsByFile[file.id];
+        return [file.id, fileFields?.length ? fileFields : EMPTY_EXTRACTED_FIELDS];
+      })
+    )
   );
   const [activePreviewFileId, setActivePreviewFileId] = useState(files[0]?.id ?? "");
-  const [notice, setNotice] = useState("已加载当前项目的上传记录，系统已根据文件名自动检测类型。");
+  const [notice, setNotice] = useState("");
   const [activeFieldId, setActiveFieldId] = useState<string | null>(null);
   const [draftValue, setDraftValue] = useState("");
   const [allFieldsOpen, setAllFieldsOpen] = useState(false);
@@ -252,7 +360,7 @@ export function RecordsClient({
   const [editingTypeFileId, setEditingTypeFileId] = useState<string | null>(null);
   const [typeSearch, setTypeSearch] = useState("");
   const [parseEventSets, setParseEventSets] = useState<Record<string, ParseEvent[]>>(() =>
-    Object.fromEntries(files.map((file, index) => [file.id, index === 0 && file.parseStatus !== "解析成功" ? initialEvents : createParseEvents(file)]))
+    Object.fromEntries(files.map((file) => [file.id, EMPTY_PARSE_EVENTS]))
   );
   const [activeParseFileId, setActiveParseFileId] = useState(files[0]?.id ?? "");
   const [parseStartTime, setParseStartTime] = useState<string | null>(null);
@@ -275,6 +383,9 @@ export function RecordsClient({
   const [retryingFileIds, setRetryingFileIds] = useState<Set<string>>(() => new Set());
   const [retryingAllFailed, setRetryingAllFailed] = useState(false);
   const [savingField, setSavingField] = useState(false);
+  const [savingAllFields, setSavingAllFields] = useState(false);
+  const [approvingFields, setApprovingFields] = useState(false);
+  const [fieldsApproved, setFieldsApproved] = useState(false);
   const [updatingTypeFileId, setUpdatingTypeFileId] = useState<string | null>(null);
   const [savingManualEntry, setSavingManualEntry] = useState(false);
   const [deletingFileIds, setDeletingFileIds] = useState<Set<string>>(() => new Set());
@@ -284,20 +395,24 @@ export function RecordsClient({
   const [workflowPollingRef] = useState<{ current: ReturnType<typeof setTimeout> | null }>({ current: null });
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const seenProgressMessagesRef = useRef<Set<string>>(new Set());
+  const activeWorkflowJobRef = useRef<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const uploadQueueListRef = useRef<HTMLDivElement | null>(null);
-  const scheduledRef = useRef<Set<string>>(new Set());
   const syncedParseEventsRef = useRef<Set<string>>(new Set());
+  const uploadedRef = useRef(uploaded);
   const previewAssetsRef = useRef(previewAssets);
   const uploadQueueRef = useRef(uploadQueue);
 
   const failedFiles = useMemo(() => uploaded.filter((file) => file.parseStatus === "解析失败"), [uploaded]);
   const successCount = uploaded.filter((file) => file.parseStatus === "解析成功").length;
   const activeCount = uploaded.filter((file) => file.parseStatus === "解析中").length;
+  const workflowInFlight = workflowStatus === "queued" || workflowStatus === "running";
   const totalFiles = uploaded.length;
   const previewFileIndex = Math.max(0, uploaded.findIndex((file) => file.id === activePreviewFileId));
   const previewFile = uploaded[previewFileIndex];
-  const editableFields = fieldSets[activePreviewFileId] ?? EMPTY_EXTRACTED_FIELDS;
+  const previewFileIsExtracting = previewFile?.parseStatus === "解析中";
+  const previewFileCanShowFields = previewFile?.parseStatus === "解析成功";
+  const editableFields = previewFileCanShowFields ? fieldSets[activePreviewFileId] ?? EMPTY_EXTRACTED_FIELDS : EMPTY_EXTRACTED_FIELDS;
   const sectionGroupedFields = useMemo(() => {
     const fields = editableFields;
     if (fields.length === 0) return [];
@@ -332,8 +447,20 @@ export function RecordsClient({
     : sectionGroupedFields[0]?.section ?? "main";
   const allFieldsSectionFields = sectionGroupedFields.find((group) => group.section === selectedAllFieldsSection)?.fields ?? [];
   const hiddenPreviewFieldCount = Math.max(0, editableFields.length - FIELD_PREVIEW_LIMIT);
-  const requiredReady = editableFields.filter((field) => requiredFields.includes(field.name) && field.value.trim()).length;
-  const generateReady = failedFiles.length === 0 && activeCount === 0 && requiredReady >= 5;
+  const successfulFields = uploaded.flatMap((file) => (file.parseStatus === "解析成功" ? fieldSets[file.id] ?? [] : []));
+  const requiredReady = countRequiredReady(successfulFields);
+  const devMockApproved = Boolean(activeRunId?.startsWith("dev-mock-run-") && fieldsApproved);
+  const readyReportFile = uploaded.find((file) =>
+    file.parseStatus === "解析成功" &&
+    Boolean(file.fieldsApproved) &&
+    Boolean(file.parseRunId) &&
+    Boolean(file.parseRunPath)
+  );
+  const activeReportRunId = readyReportFile?.parseRunId ?? (devMockApproved ? activeRunId : null);
+  const previewFieldsApproved = Boolean(previewFile?.fieldsApproved) || devMockApproved;
+  const previewRunReady = Boolean(previewFile?.parseRunId && previewFile?.parseRunPath) || Boolean(activeRunId?.startsWith("dev-mock-run-"));
+  const generateReady = totalFiles > 0 && failedFiles.length === 0 && activeCount === 0 && successfulFields.length > 0 && Boolean(activeReportRunId);
+  const reportHref = activeReportRunId ? `/reports?runId=${encodeURIComponent(activeReportRunId)}` : "/reports";
   const activeField = editableFields.find((field) => field.id === activeFieldId);
   const editingFile = uploaded.find((file) => file.id === editingTypeFileId);
   const filteredTypeOptions = useMemo(() => {
@@ -350,6 +477,41 @@ export function RecordsClient({
   const activeParseStartTime = getEventsStartTime(activeParseEvents) ?? parseStartTime;
   const activeParseElapsed = getEventsElapsed(activeParseEvents);
   const queueReady = uploadQueue.length > 0 && uploadQueue.every((item) => item.progress >= 100);
+
+  async function refreshProjectRecords(projectId = currentProject?.id) {
+    if (!projectId) return;
+    const [projectFiles, projectFieldSets] = await Promise.all([
+      recordApi.files(projectId),
+      recordApi.fieldsByFile(projectId)
+    ]);
+    const eventEntries = await Promise.all(
+      projectFiles.map(async (file) => {
+        try {
+          return [file.id, await recordApi.fileParseEvents(file.id)] as const;
+        } catch {
+          return [file.id, parseEventSets[file.id] ?? EMPTY_PARSE_EVENTS] as const;
+        }
+      })
+    );
+    setUploaded(projectFiles);
+    setFieldSets(projectFieldSets);
+    setParseEventSets(Object.fromEntries(eventEntries));
+    eventEntries.forEach(([fileId]) => syncedParseEventsRef.current.add(fileId));
+    const preferredFile = projectFiles.find((file) => file.id === activePreviewFileId) ?? projectFiles[0];
+    setActivePreviewFileId(preferredFile?.id ?? "");
+    setActiveParseFileId((current) => projectFiles.some((file) => file.id === current) ? current : preferredFile?.id ?? "");
+    setActiveRunId(preferredFile?.parseRunId ?? projectFiles.find((file) => file.parseRunId)?.parseRunId ?? null);
+    setFieldsApproved(Boolean(preferredFile?.fieldsApproved));
+    const completedRunFile = getCompletedExtractionRunFile(projectFiles);
+    const hasRunningFile = projectFiles.some((file) => file.parseStatus === "解析中");
+    if (completedRunFile && !hasRunningFile) {
+      const completedFileEvents = eventEntries.find(([fileId]) => fileId === completedRunFile.id)?.[1] ?? [];
+      setWorkflowJobId((current) => current ?? completedRunFile.parseJobId ?? `persisted-${completedRunFile.parseRunId}`);
+      setWorkflowStatus("succeeded");
+      setWorkflowEvents(buildCompletedWorkflowEvents(completedFileEvents));
+      activeWorkflowJobRef.current = null;
+    }
+  }
 
   const steps = useMemo(() => {
     if (totalFiles === 0) return [
@@ -406,7 +568,7 @@ export function RecordsClient({
       { stage: "validate", status: stageState("validate"), label: "配置验证", meta: stageState("validate") === "done" ? "已通过" : "等待中" },
       { stage: "prepare", status: stageState("prepare"), label: "工作区准备", meta: stageState("prepare") === "done" ? "已就绪" : "等待中" },
       { stage: "extract", status: stageState("extract"), label: "字段提取", meta: statusLabel === "running" ? "提取中…" : statusLabel === "succeeded" ? `${fieldCount} 个字段` : "等待中" },
-      { stage: "generate", status: stageState("generate"), label: "报告生成", meta: statusLabel === "succeeded" ? "已完成" : "等待中" },
+      { stage: "generate", status: statusLabel === "succeeded" ? "done" : "pending", label: "结构化存储", meta: statusLabel === "succeeded" ? "已写入字段库" : "等待中" },
     ];
   }, [workflowEvents, workflowStatus, fieldCount]);
 
@@ -443,12 +605,140 @@ export function RecordsClient({
   }, [uploadModalOpen, uploadQueue.length]);
 
   useEffect(() => {
+    uploadedRef.current = uploaded;
+  }, [uploaded]);
+
+  useEffect(() => {
     previewAssetsRef.current = previewAssets;
   }, [previewAssets]);
 
   useEffect(() => {
     uploadQueueRef.current = uploadQueue;
   }, [uploadQueue]);
+
+  useEffect(() => {
+    const projectId = currentProject?.id;
+    if (!projectId || !workflowJobId) return;
+    writeStoredWorkflow(projectId, {
+      projectId,
+      jobId: workflowJobId,
+      status: workflowStatus,
+      activeRunId,
+      fieldsApproved,
+      events: workflowEvents,
+      activeParseFileId,
+      parseStartTime,
+      parseProgress,
+      updatedAt: new Date().toISOString()
+    });
+  }, [activeParseFileId, activeRunId, currentProject?.id, fieldsApproved, parseProgress, parseStartTime, workflowEvents, workflowJobId, workflowStatus]);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(""), 2800);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
+  useEffect(() => {
+    const projectId = currentProject?.id;
+    if (!projectId) {
+      setUploaded([]);
+      setFieldSets({});
+      setParseEventSets({});
+      setActivePreviewFileId("");
+      setActiveParseFileId("");
+      setWorkflowJobId(null);
+      setWorkflowStatus(null);
+      setWorkflowEvents([]);
+      setActiveRunId(null);
+      setFieldsApproved(false);
+      activeWorkflowJobRef.current = null;
+      syncedParseEventsRef.current.clear();
+      return;
+    }
+
+    let cancelled = false;
+    const storedWorkflow = readStoredWorkflow(projectId);
+    syncedParseEventsRef.current.clear();
+    setUploaded([]);
+    setFieldSets({});
+    setParseEventSets({});
+    setActivePreviewFileId("");
+    setActiveParseFileId("");
+    setWorkflowJobId(storedWorkflow?.jobId ?? null);
+    setWorkflowStatus(storedWorkflow?.status ?? null);
+    setWorkflowEvents(storedWorkflow?.events ?? []);
+    setActiveRunId(null);
+    setFieldsApproved(false);
+    setParseStartTime(storedWorkflow?.parseStartTime ?? null);
+    setParseProgress(storedWorkflow?.parseProgress ?? 71);
+    activeWorkflowJobRef.current = storedWorkflow?.jobId ?? null;
+    if (workflowPollingRef.current) {
+      clearTimeout(workflowPollingRef.current);
+      workflowPollingRef.current = null;
+    }
+
+    void Promise.all([
+      recordApi.files(projectId),
+      recordApi.fieldsByFile(projectId)
+    ]).then(async ([projectFiles, projectFieldSets]) => {
+      if (cancelled) return;
+      const eventEntries = await Promise.all(
+        projectFiles.map(async (file) => {
+          try {
+            const events = await recordApi.fileParseEvents(file.id);
+            return [file.id, events] as const;
+          } catch {
+            return [file.id, EMPTY_PARSE_EVENTS] as const;
+          }
+        })
+      );
+      if (cancelled) return;
+      setUploaded(projectFiles);
+      setFieldSets(projectFieldSets);
+      setParseEventSets(() => {
+        const next = Object.fromEntries(eventEntries);
+        if (storedWorkflow?.activeParseFileId && storedWorkflow.events.length > 0) {
+          next[storedWorkflow.activeParseFileId] = mergeParseEvents(
+            next[storedWorkflow.activeParseFileId] ?? [],
+            storedWorkflow.events
+          );
+        }
+        return next;
+      });
+      eventEntries.forEach(([fileId]) => syncedParseEventsRef.current.add(fileId));
+      const firstId = storedWorkflow?.activeParseFileId && projectFiles.some((file) => file.id === storedWorkflow.activeParseFileId)
+        ? storedWorkflow.activeParseFileId
+        : projectFiles[0]?.id ?? "";
+      const firstFile = projectFiles.find((file) => file.id === firstId) ?? projectFiles[0];
+      const firstRunFile = firstFile?.parseRunId ? firstFile : projectFiles.find((file) => file.parseRunId);
+      setActivePreviewFileId(firstId);
+      setActiveParseFileId(firstId);
+      setActiveRunId(firstRunFile?.parseRunId ?? null);
+      setFieldsApproved(Boolean(firstFile?.fieldsApproved));
+      const completedRunFile = getCompletedExtractionRunFile(projectFiles);
+      const hasRunningFile = projectFiles.some((file) => file.parseStatus === "解析中");
+      if (completedRunFile && !hasRunningFile) {
+        const completedFileEvents = eventEntries.find(([fileId]) => fileId === completedRunFile.id)?.[1] ?? [];
+        setWorkflowJobId(storedWorkflow?.jobId ?? completedRunFile.parseJobId ?? `persisted-${completedRunFile.parseRunId}`);
+        setWorkflowStatus("succeeded");
+        setWorkflowEvents(buildCompletedWorkflowEvents(completedFileEvents));
+        activeWorkflowJobRef.current = null;
+      } else if (storedWorkflow?.jobId && (storedWorkflow.status === "queued" || storedWorkflow.status === "running")) {
+        pollWorkflowJob(storedWorkflow.jobId);
+      }
+    }).catch(() => {
+      if (cancelled) return;
+      setNotice("读取当前项目原始记录失败，请确认 Core API 可用。");
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  // pollWorkflowJob is intentionally excluded: this effect restores one project snapshot
+  // on project change; adding the function would reload files on every render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentProject?.id, workflowPollingRef]);
 
   useEffect(() => {
     const fileIds = uploaded.map((file) => file.id).filter((fileId) => !syncedParseEventsRef.current.has(fileId));
@@ -485,47 +775,24 @@ export function RecordsClient({
   }, [uploaded]);
 
   useEffect(() => {
+    if (!previewFile) return;
+    if (previewFile.parseRunId) setActiveRunId(previewFile.parseRunId);
+    setFieldsApproved(Boolean(previewFile.fieldsApproved) || devMockApproved);
+  }, [devMockApproved, previewFile]);
+
+  useEffect(() => {
     return () => {
+      if (workflowPollingRef.current) {
+        clearTimeout(workflowPollingRef.current);
+        workflowPollingRef.current = null;
+      }
+      activeWorkflowJobRef.current = null;
       Object.values(previewAssetsRef.current).forEach((asset) => {
         if (asset.url) URL.revokeObjectURL(asset.url);
       });
       uploadQueueRef.current.forEach((item) => URL.revokeObjectURL(item.previewUrl));
     };
-  }, []);
-
-  // Auto-parse simulation: files in "解析中" transition to "解析成功" after delay.
-  // Suppressed when the real gen-report workflow is running.
-  useEffect(() => {
-    if (workflowJobId) return;
-    const pending = uploaded.filter((f) => f.parseStatus === "解析中" && !scheduledRef.current.has(f.id));
-    if (pending.length === 0) return;
-
-    pending.forEach((file) => scheduledRef.current.add(file.id));
-
-    const timers = pending.map((file, i) =>
-      setTimeout(() => {
-        setUploaded((current) =>
-          current.map((f) => {
-            if (f.id !== file.id) return f;
-            return { ...f, parseStatus: "解析成功" as const };
-          })
-        );
-        setParseEventSets((current) => ({
-          ...current,
-          [file.id]: [
-            ...(current[file.id] ?? []),
-            { time: nowTime(), label: "字段提取完成", state: "done" as const },
-            { time: nowTime(), label: "结构化结果已写入字段库", state: "done" as const }
-          ]
-        }));
-        setParseProgress((p) => Math.min(100, p + Math.floor(20 / pending.length)));
-        setNotice(`${file.name} 解析成功，已提取关键字段。`);
-        scheduledRef.current.delete(file.id);
-      }, 2500 + i * 800)
-    );
-
-    return () => timers.forEach(clearTimeout);
-  }, [uploaded, workflowJobId]);
+  }, [workflowPollingRef]);
 
   // Start parse timer when first "解析中" file appears
   const startTimeRef = useRef(false);
@@ -540,35 +807,7 @@ export function RecordsClient({
     }
   }, [activeCount, successCount, parseStartTime]);
 
-  const retryFile = useCallback(async (fileId: string) => {
-    if (retryingFileIds.has(fileId)) return;
-    setRetryingFileIds((current) => new Set(current).add(fileId));
-    setUploaded((current) =>
-      current.map((file) => (file.id === fileId ? { ...file, parseStatus: "解析中" as const } : file))
-    );
-    setParseEventSets((current) => ({
-      ...current,
-      [fileId]: [
-        ...(current[fileId] ?? []),
-        { time: nowTime(), label: "重新发起解析请求", state: "active" as const }
-      ]
-    }));
-    setActiveParseFileId(fileId);
-    setNotice("失败文件已重新进入解析队列，系统将保留原失败日志用于追溯。");
-    try {
-      await recordApi.updateFileStatus(fileId, "解析中");
-    } catch {
-      setNotice("解析重试接口暂不可用，已先在当前页面重新入队。");
-    } finally {
-      setRetryingFileIds((current) => {
-        const next = new Set(current);
-        next.delete(fileId);
-        return next;
-      });
-    }
-  }, [retryingFileIds]);
-
-  const retryAllFailed = useCallback(async () => {
+  async function retryAllFailed() {
     if (retryingAllFailed || failedFiles.length === 0) return;
     setRetryingAllFailed(true);
     setUploaded((current) =>
@@ -584,12 +823,50 @@ export function RecordsClient({
     setNotice("全部失败文件已重新进入解析队列。");
     try {
       await Promise.all(failedFiles.map((file) => recordApi.updateFileStatus(file.id, "解析中")));
+      startGenReportWorkflow({ force: true, focusFileId: failedFiles[0]?.id, reason: "全部失败文件重新进入解析队列" });
     } catch {
       setNotice("批量重试接口暂不可用，已先在当前页面重新入队。");
     } finally {
       setRetryingAllFailed(false);
     }
-  }, [failedFiles, retryingAllFailed]);
+  }
+
+  async function reparseFile(fileId: string) {
+    if (retryingFileIds.has(fileId)) return;
+    const file = uploadedRef.current.find((item) => item.id === fileId);
+    if (!file) return;
+    setRetryingFileIds((current) => new Set(current).add(fileId));
+    setUploaded((current) =>
+      current.map((item) => (item.id === fileId ? { ...item, parseStatus: "解析中" as const } : item))
+    );
+    setFieldSets((current) => ({ ...current, [fileId]: [] }));
+    const event: ParseEvent = {
+      time: nowTime(),
+      label: "已停止上一次前端进度监听，重新发起解析",
+      state: "active"
+    };
+    setParseEventSets((current) => ({
+      ...current,
+      [fileId]: mergeParseEvents(current[fileId] ?? [], [event])
+    }));
+    setActiveParseFileId(fileId);
+    setActivePreviewFileId(fileId);
+    setParseStartTime(nowTime());
+    setParseProgress(71);
+    setNotice(`${file.name} 已重新进入解析队列。`);
+    try {
+      await recordApi.updateFileStatus(fileId, "解析中");
+      startGenReportWorkflow({ force: true, focusFileId: fileId, reason: `${file.name} 重新解析` });
+    } catch {
+      setNotice("重新解析接口暂不可用，已先在当前页面重新入队。");
+    } finally {
+      setRetryingFileIds((current) => {
+        const next = new Set(current);
+        next.delete(fileId);
+        return next;
+      });
+    }
+  }
 
   function openFieldEditor(field: ExtractedField) {
     setActiveFieldId(field.id);
@@ -615,19 +892,56 @@ export function RecordsClient({
         field.id === activeFieldId ? { ...field, value: draftValue, confidence: Math.max(field.confidence, 99) } : field
       )
     }));
+    setFieldsApproved(false);
     setNotice("字段值已由人工修正，来源将标记为人工校核。");
     try {
-      if (activeRunId) {
+      const targetRunId = previewFile?.parseRunId ?? activeRunId;
+      if (targetRunId && !targetRunId.startsWith("dev-mock-run-")) {
         const field = (fieldSets[activePreviewFileId] ?? []).find((f) => f.id === activeFieldId);
-        await genReportApi.setRunField(activeRunId, field?.section ?? "main", activeField?.name ?? "", draftValue);
+        await genReportApi.setRunField(targetRunId, field?.section ?? "main", activeField?.name ?? "", draftValue);
       } else {
         await recordApi.updateField(activePreviewFileId, activeFieldId, draftValue);
       }
+      await refreshProjectRecords();
     } catch {
       setNotice("字段保存接口暂不可用，已先保存在当前页面。");
     } finally {
       setSavingField(false);
       setActiveFieldId(null);
+    }
+  }
+
+  async function saveAllFields() {
+    if (savingAllFields || !previewFile) return;
+    const fields = fieldSets[activePreviewFileId] ?? [];
+    if (fields.length === 0) {
+      setAllFieldsOpen(false);
+      return;
+    }
+    setSavingAllFields(true);
+    setFieldsApproved(false);
+    try {
+      const targetRunId = previewFile.parseRunId ?? activeRunId;
+      if (targetRunId && !targetRunId.startsWith("dev-mock-run-")) {
+        let failedCount = 0;
+        for (const field of fields) {
+          const result = await genReportApi.setRunField(targetRunId, field.section ?? "main", field.name, field.value);
+          if (result.status !== "ok") failedCount += 1;
+        }
+        if (failedCount > 0) {
+          setNotice(`有 ${failedCount} 个字段未保存成功，请检查 section 或字段名。`);
+          return;
+        }
+      } else {
+        await Promise.all(fields.map((field) => recordApi.updateField(activePreviewFileId, field.id, field.value)));
+      }
+      await refreshProjectRecords();
+      setAllFieldsOpen(false);
+      setNotice("字段修改已保存，审核状态已重置，请重新审核后生成报告。");
+    } catch {
+      setNotice("字段保存接口暂不可用，请稍后重试。");
+    } finally {
+      setSavingAllFields(false);
     }
   }
 
@@ -638,6 +952,7 @@ export function RecordsClient({
         field.id === fieldId ? { ...field, value, confidence: Math.max(field.confidence, 99) } : field
       )
     }));
+    setFieldsApproved(false);
   }
 
   async function updateFileType(fileId: string, detectedType: DetectedType) {
@@ -675,6 +990,7 @@ export function RecordsClient({
         { id: `${targetFileId}-manual-${Date.now()}`, name: manualForm.name.trim(), value: manualForm.value.trim(), confidence: 100 }
       ]
     }));
+    setFieldsApproved(false);
     if (manualEntryFileId) {
       setUploaded((current) =>
         current.map((file) => (file.id === manualEntryFileId ? { ...file, parseStatus: "解析成功" as const } : file))
@@ -684,6 +1000,7 @@ export function RecordsClient({
     setNotice(`已手动录入字段「${manualForm.name}」，文件状态更新为解析成功。`);
     try {
       await recordApi.addManualField(targetFileId, manualForm.name.trim(), manualForm.value.trim());
+      await refreshProjectRecords();
     } catch {
       setNotice("手动录入接口暂不可用，已先保存在当前页面。");
     } finally {
@@ -709,10 +1026,15 @@ export function RecordsClient({
   }
 
   async function commitUploads(items: UploadQueueItem[]) {
+    if (!currentProject?.id) {
+      setNotice("请先选择项目，再上传原始记录。");
+      return;
+    }
     const now = new Date();
     const uploadTime = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")} ${nowTime().slice(0, 5)}`;
     let newFiles: RawFile[] = items.map((item) => ({
       id: createId("f"),
+      projectId: currentProject.id,
       name: item.name,
       type: item.type,
       size: item.size,
@@ -727,7 +1049,7 @@ export function RecordsClient({
     try {
       // Send actual file content via multipart when available.
       const actualFiles = items.map((item) => item.file).filter(Boolean);
-      if (actualFiles.length > 0 && currentProject?.id) {
+      if (actualFiles.length > 0) {
         const response = await recordApi.uploadFilesWithContent(currentProject.id, actualFiles);
         newFiles = response.files;
         apiFields = response.fields;
@@ -735,6 +1057,7 @@ export function RecordsClient({
       } else {
         // Fallback: JSON-only upload (no actual file content).
         const response = await recordApi.uploadFiles(
+          currentProject.id,
           items.map((item) => ({
             name: item.name,
             type: item.type,
@@ -747,21 +1070,23 @@ export function RecordsClient({
         apiEvents = response.parseEvents;
       }
     } catch {
-      setNotice("后端上传接口暂不可用，已先使用本地队列继续演示。");
+      setNotice("后端上传接口暂不可用，文件未写入数据库。请稍后重试。");
+      return;
     }
 
     setUploaded((current) => [...current, ...newFiles]);
     setFieldSets((current) => {
       const next = { ...current };
-      newFiles.forEach((file, index) => {
-        next[file.id] = apiFields?.[file.id] ?? createFieldSet(file.id, fields, uploaded.length + index);
+      newFiles.forEach((file) => {
+        const uploadedFields = apiFields?.[file.id] ?? EMPTY_EXTRACTED_FIELDS;
+        next[file.id] = file.parseStatus === "解析成功" ? uploadedFields : [];
       });
       return next;
     });
     setParseEventSets((current) => {
       const next = { ...current };
       newFiles.forEach((file) => {
-        next[file.id] = apiEvents?.[file.id] ?? createParseEvents(file);
+        next[file.id] = apiEvents?.[file.id] ?? EMPTY_PARSE_EVENTS;
       });
       return next;
     });
@@ -935,11 +1260,15 @@ export function RecordsClient({
 
   async function handleExportResults() {
     if (exportingResults) return;
+    if (!currentProject?.id) {
+      setNotice("请先选择项目，再导出原始记录。");
+      return;
+    }
     setExportingResults(true);
     setExportToast(false);
     setNotice("正在准备解析结果导出文件...");
     try {
-      const response = await recordApi.exportResults();
+      const response = await recordApi.exportResults(currentProject.id);
       setNotice(`已导出解析结果：${response.fileName}。`);
       setExportToast(true);
       setTimeout(() => setExportToast(false), 2500);
@@ -950,20 +1279,39 @@ export function RecordsClient({
     }
   }
 
-  function startGenReportWorkflow() {
-    if (workflowJobId) return;
+  function stopWorkflowPolling() {
+    if (workflowPollingRef.current) {
+      clearTimeout(workflowPollingRef.current);
+      workflowPollingRef.current = null;
+    }
+    activeWorkflowJobRef.current = null;
+  }
+
+  function startGenReportWorkflow(options: { force?: boolean; focusFileId?: string; reason?: string } = {}) {
+    if (workflowInFlight && !options.force) return;
     if (!currentProject?.id) {
       setNotice("请先在侧边栏选择一个项目后再上传文件并生成报告。");
       return;
     }
     const projectId = currentProject.id;
 
+    if (options.force) stopWorkflowPolling();
+    if (options.force) clearStoredWorkflow(projectId);
     setWorkflowStatus("queued");
-    setWorkflowEvents([]);
+    setWorkflowJobId(null);
+    setActiveRunId(null);
+    setFieldsApproved(false);
+    setWorkflowEvents(options.reason ? [{ time: nowTime(), label: options.reason, state: "active" }] : []);
     seenProgressMessagesRef.current.clear();
+    if (options.focusFileId) {
+      setActiveParseFileId(options.focusFileId);
+      setActivePreviewFileId(options.focusFileId);
+    }
 
-    genReportApi.runProjectWorkflow(projectId).then((job) => {
+    genReportApi.extractProjectFields(projectId).then((job) => {
+      activeWorkflowJobRef.current = job.jobId;
       setWorkflowJobId(job.jobId);
+      setWorkflowStatus(job.status);
       pollWorkflowJob(job.jobId);
     }).catch((err: unknown) => {
       setWorkflowStatus("failed");
@@ -972,8 +1320,51 @@ export function RecordsClient({
     });
   }
 
+  function finishRecordExtraction(job: WorkflowJob, message = "字段提取完成，结构化结果已写入字段库。") {
+    setWorkflowStatus("succeeded");
+    setNotice(message);
+    const doneEvents: ParseEvent[] = [
+      { time: nowTime(), label: "字段提取完成", state: "done" },
+      { time: nowTime(), label: "结构化结果已写入字段库", state: "done" }
+    ];
+    setWorkflowEvents((prev) =>
+      mergeParseEvents(
+        prev.map((event) => ({ ...event, state: event.state === "active" ? "done" as const : event.state })),
+        doneEvents
+      )
+    );
+    const pendingFileIds = new Set(
+      uploadedRef.current.filter((file) => file.parseStatus === "解析中").map((file) => file.id)
+    );
+    setUploaded((current) =>
+      current.map((file) => (file.parseStatus === "解析中" ? { ...file, parseStatus: "解析成功" as const } : file))
+    );
+    setParseEventSets((current) => {
+      if (pendingFileIds.size === 0) return current;
+      const next = { ...current };
+      pendingFileIds.forEach((fileId) => {
+        next[fileId] = mergeParseEvents(
+          (next[fileId] ?? []).map((event) => ({ ...event, state: event.state === "active" ? "done" as const : event.state })),
+          doneEvents
+        );
+      });
+      return next;
+    });
+    setParseProgress(100);
+    workflowPollingRef.current = null;
+
+    const runIds = Object.keys(job.runPaths);
+    if (runIds.length > 0) {
+      setActiveRunId(runIds[0]);
+    }
+    if (currentProject?.id) {
+      void refreshProjectRecords(currentProject.id).catch(() => undefined);
+    }
+  }
+
   function pollWorkflowJob(jobId: string) {
     void genReportApi.getJob(jobId).then((job) => {
+      if (activeWorkflowJobRef.current && activeWorkflowJobRef.current !== jobId) return;
       setWorkflowStatus(job.status);
 
       // Convert unseen progress events into timeline entries.
@@ -990,7 +1381,7 @@ export function RecordsClient({
         newEvents[newEvents.length - 1] = { ...newEvents[newEvents.length - 1], state: "active" };
       }
       if (newEvents.length > 0) {
-        setWorkflowEvents((prev) => [...prev, ...newEvents]);
+        setWorkflowEvents((prev) => mergeParseEvents(prev, newEvents));
         setNotice(newEvents[newEvents.length - 1].label);
       }
 
@@ -998,7 +1389,7 @@ export function RecordsClient({
       if (newEvents.length > 0 && activeParseFile) {
         setParseEventSets((current) => ({
           ...current,
-          [activeParseFile.id]: [...(current[activeParseFile.id] ?? []), ...newEvents],
+          [activeParseFile.id]: mergeParseEvents(current[activeParseFile.id] ?? [], newEvents),
         }));
       }
 
@@ -1009,197 +1400,130 @@ export function RecordsClient({
           if (runIds.length > 0) {
             const runId = runIds[0];
             setActiveRunId(runId);
-            // Fetch fields as soon as the run is registered — may return
-            // partial data if extract is still running.  A no-op catch
-            // is intentional here: the success handler below acts as the
-            // authoritative final-state fetch.
-            genReportApi.getRunFields(runId).then((data) => {
-              if (data.fields.length > 0) {
-                setFieldSets((current) => {
-                  const next = { ...current };
-                  for (const fileId of Object.keys(next)) {
-                    next[fileId] = data.fields;
-                  }
-                  return next;
-                });
-              }
-            }).catch(() => undefined);
           }
         }
         workflowPollingRef.current = setTimeout(() => pollWorkflowJob(jobId), 2000);
       } else if (job.status === "succeeded") {
-        setNotice("报告生成完成！");
-        setUploaded((current) =>
-          current.map((f) => (f.parseStatus === "解析中" ? { ...f, parseStatus: "解析成功" as const } : f))
-        );
-        // Fetch real extracted fields from the run.
-        const runIds = Object.keys(job.runPaths);
-        if (runIds.length > 0) {
-          const runId = runIds[0];
-          setActiveRunId(runId);
-          genReportApi.getRunFields(runId).then((data) => {
-            if (data.fields.length > 0) {
-              const fieldsBySection: Record<string, ExtractedField[]> = {};
-              for (const f of data.fields) {
-                const key = f.section || "main";
-                (fieldsBySection[key] ??= []).push(f);
-              }
-              // Map fields to each uploaded file based on source name matching.
-              setFieldSets((current) => {
-                const next = { ...current };
-                for (const fileId of Object.keys(next)) {
-                  next[fileId] = data.fields;
-                }
-                return next;
-              });
-            }
-          }).catch(() => { /* fields endpoint unavailable — keep mock fields */ });
-        }
+        finishRecordExtraction(job);
       } else if (job.status === "failed") {
+        if (isExtractionCompleteJob(job)) {
+          finishRecordExtraction(job, "字段提取已完成，后续人工审核不影响原始记录解析结果。");
+          return;
+        }
         setNotice(`工作流失败：${job.error ?? job.message}`);
+        const failedEvent: ParseEvent = { time: nowTime(), label: job.error ?? job.message, state: "active" };
+        setWorkflowEvents((prev) => mergeParseEvents(prev, [failedEvent]));
+        const pendingFileIds = new Set(
+          uploadedRef.current.filter((file) => file.parseStatus === "解析中").map((file) => file.id)
+        );
+        if (pendingFileIds.size > 0) {
+          setUploaded((current) =>
+            current.map((file) => (pendingFileIds.has(file.id) ? { ...file, parseStatus: "解析失败" as const } : file))
+          );
+          setParseEventSets((current) => {
+            const next = { ...current };
+            pendingFileIds.forEach((fileId) => {
+              next[fileId] = mergeParseEvents(next[fileId] ?? [], [failedEvent]);
+            });
+            return next;
+          });
+        }
+        workflowPollingRef.current = null;
       }
     }).catch(() => {
+      if (activeWorkflowJobRef.current && activeWorkflowJobRef.current !== jobId) return;
       setWorkflowStatus("failed");
-      setNotice("查询进度失败");
+      const event: ParseEvent = {
+        time: nowTime(),
+        label: "查询进度失败，可能是后端服务重启导致任务句柄丢失。请点击重新解析。",
+        state: "active"
+      };
+      setWorkflowEvents((prev) => mergeParseEvents(prev, [event]));
+      setNotice(event.label);
     });
   }
 
-  function seedMockWorkflow() {
-    const now = new Date();
-    const t = (offsetSeconds: number) =>
-      new Date(now.getTime() + offsetSeconds * 1000).toISOString();
-
-    setWorkflowJobId("mock-job-001");
-    setActiveRunId("report-p1");
-    setWorkflowEvents([
-      { time: new Date(t(0)).toLocaleTimeString("zh-CN", { hour12: false }), label: "Validate started", state: "done" },
-      { time: new Date(t(1)).toLocaleTimeString("zh-CN", { hour12: false }), label: "Validate completed", state: "done" },
-      { time: new Date(t(1)).toLocaleTimeString("zh-CN", { hour12: false }), label: "Prepare started", state: "done" },
-      { time: new Date(t(2)).toLocaleTimeString("zh-CN", { hour12: false }), label: "Prepare completed", state: "done" },
-      { time: new Date(t(2)).toLocaleTimeString("zh-CN", { hour12: false }), label: "Run report-p1: extract started", state: "done" },
-      { time: new Date(t(2)).toLocaleTimeString("zh-CN", { hour12: false }), label: "Main agent started (provider=claude_code, model=default)", state: "done" },
-      { time: new Date(t(32)).toLocaleTimeString("zh-CN", { hour12: false }), label: "Agent heartbeat: run_main_agent running for 00:00:30", state: "done" },
-      { time: new Date(t(62)).toLocaleTimeString("zh-CN", { hour12: false }), label: "Agent heartbeat: run_main_agent running for 00:01:00", state: "done" },
-      { time: new Date(t(92)).toLocaleTimeString("zh-CN", { hour12: false }), label: "Agent heartbeat: run_main_agent running for 00:01:30", state: "done" },
-      { time: new Date(t(122)).toLocaleTimeString("zh-CN", { hour12: false }), label: "Agent heartbeat: run_main_agent running for 00:02:00", state: "done" },
-      { time: new Date(t(152)).toLocaleTimeString("zh-CN", { hour12: false }), label: "Agent heartbeat: run_main_agent running for 00:02:30", state: "done" },
-      { time: new Date(t(182)).toLocaleTimeString("zh-CN", { hour12: false }), label: "Agent heartbeat: run_main_agent running for 00:03:00", state: "done" },
-      { time: new Date(t(194)).toLocaleTimeString("zh-CN", { hour12: false }), label: "Agent completed: run_main_agent in 00:03:14", state: "done" },
-      { time: new Date(t(194)).toLocaleTimeString("zh-CN", { hour12: false }), label: "Main agent completed", state: "done" },
-      { time: new Date(t(195)).toLocaleTimeString("zh-CN", { hour12: false }), label: "Structure validation found 0 issue(s)", state: "done" },
-      { time: new Date(t(195)).toLocaleTimeString("zh-CN", { hour12: false }), label: "Main fill payload written", state: "done" },
-      { time: new Date(t(196)).toLocaleTimeString("zh-CN", { hour12: false }), label: "Item agent started: geometry_precision", state: "done" },
-      { time: new Date(t(216)).toLocaleTimeString("zh-CN", { hour12: false }), label: "Item agent completed: geometry_precision", state: "done" },
-      { time: new Date(t(217)).toLocaleTimeString("zh-CN", { hour12: false }), label: "Item agent started: position_precision", state: "done" },
-      { time: new Date(t(237)).toLocaleTimeString("zh-CN", { hour12: false }), label: "Item agent completed: position_precision", state: "done" },
-      { time: new Date(t(238)).toLocaleTimeString("zh-CN", { hour12: false }), label: "Run report-p1: extract completed", state: "done" },
-      { time: new Date(t(239)).toLocaleTimeString("zh-CN", { hour12: false }), label: "Generate started", state: "done" },
-      { time: new Date(t(244)).toLocaleTimeString("zh-CN", { hour12: false }), label: "Generated: 3 section(s), 0 issue(s)", state: "done" },
-    ]);
-    setWorkflowStatus("succeeded");
-
-    // Inject 82 realistic fields across 3 sections
+  // DEV ONLY: front-end workflow shortcut for local UI testing.
+  // This deliberately does not call Core API or write database records.
+  // TODO: remove this helper and its button before production release.
+  function seedDevelopmentMockWorkflow() {
+    const projectId = currentProject?.id ?? "dev-project";
+    const mockFile: RawFile = {
+      id: createId("dev-file"),
+      projectId,
+      name: "开发调试原始记录.docx",
+      type: "Word",
+      size: "128 KB",
+      uploadedAt: new Date().toISOString().slice(0, 16).replace("T", " "),
+      parseStatus: "解析成功",
+      detectedType: "几何精度",
+      typeConfirmed: true,
+    };
+    const targetFiles = uploaded.length > 0
+      ? uploaded.map((file) => ({ ...file, parseStatus: "解析成功" as const }))
+      : [mockFile];
+    const targetFileIds = targetFiles.map((file) => file.id);
     const mockFields: ExtractedField[] = [
-      // --- main section (35) ---
-      { id: "main-001", name: "{{report_no}}", value: "W1250905-02-01", confidence: 98, section: "main" },
-      { id: "main-002", name: "{{product_name}}", value: "三轴坐标磨床", confidence: 97, section: "main" },
-      { id: "main-003", name: "{{model_spec}}", value: "SF260H", confidence: 96, section: "main" },
-      { id: "main-004", name: "{{manufacturer}}", value: "江西佳时特精密机械有限责任公司", confidence: 95, section: "main" },
-      { id: "main-005", name: "{{client}}", value: "中国工程物理研究院机械制造工艺研究所", confidence: 94, section: "main" },
-      { id: "main-006", name: "{{inspection_type}}", value: "几何精度", confidence: 98, section: "main" },
-      { id: "main-007", name: "{{issue_date}}", value: "2025-09-05", confidence: 99, section: "main" },
-      { id: "main-008", name: "{{issue_year}}", value: "2025", confidence: 99, section: "main" },
-      { id: "main-009", name: "{{issue_month}}", value: "09", confidence: 99, section: "main" },
-      { id: "main-010", name: "{{issue_day}}", value: "05", confidence: 99, section: "main" },
-      { id: "main-011", name: "{{basic_product_name}}", value: "三轴坐标磨床", confidence: 95, section: "main" },
-      { id: "main-012", name: "{{basic_model_spec}}", value: "SF260H", confidence: 95, section: "main" },
-      { id: "main-013", name: "{{basic_manufacturer}}", value: "江西佳时特", confidence: 90, section: "main" },
-      { id: "main-014", name: "{{basic_client}}", value: "中物院机械所", confidence: 88, section: "main" },
-      { id: "main-015", name: "{{production_date}}", value: "2024-12", confidence: 85, section: "main" },
-      { id: "main-016", name: "{{factory_no}}", value: "SF260H-2024-0038", confidence: 92, section: "main" },
-      { id: "main-017", name: "{{sample_no}}", value: "W1250905-02", confidence: 93, section: "main" },
-      { id: "main-018", name: "{{sample_quantity}}", value: "1", confidence: 98, section: "main" },
-      { id: "main-019", name: "{{sample_grade}}", value: "", confidence: 0, section: "main" },
-      { id: "main-020", name: "{{sample_received_date}}", value: "2025-09-03", confidence: 94, section: "main" },
-      { id: "main-021", name: "{{sample_received_status}}", value: "外观完好", confidence: 90, section: "main" },
-      { id: "main-022", name: "{{inspection_date_range}}", value: "2025-09-04 至 2025-09-05", confidence: 96, section: "main" },
-      { id: "main-023", name: "{{inspection_location}}", value: "精密测量实验室", confidence: 97, section: "main" },
-      { id: "main-024", name: "{{basic_inspection_type}}", value: "出厂检验", confidence: 88, section: "main" },
-      { id: "main-025", name: "{{inspection_basis_text}}", value: "GB/T 17421.1-1998 机床检验通则 第1部分", confidence: 95, section: "main" },
-      { id: "main-026", name: "{{inspection_conclusion}}", value: "所检项目符合GB/T 17421.1-1998标准要求", confidence: 94, section: "main" },
-      { id: "main-027", name: "{{remarks}}", value: "", confidence: 0, section: "main" },
-      { id: "main-028", name: "{{approved_by}}", value: "", confidence: 0, section: "main" },
-      { id: "main-029", name: "{{reviewed_by}}", value: "", confidence: 0, section: "main" },
-      { id: "main-030", name: "{{chief_inspector}}", value: "", confidence: 0, section: "main" },
-      { id: "main-031", name: "{{summary_item_no}}", value: "G1~G3", confidence: 90, section: "main" },
-      { id: "main-032", name: "{{summary_test_item}}", value: "", confidence: 0, section: "main" },
-      { id: "main-033", name: "{{summary_requirement}}", value: "", confidence: 0, section: "main" },
-      { id: "main-034", name: "{{summary_result}}", value: "", confidence: 0, section: "main" },
-      { id: "main-035", name: "{{summary_conclusion}}", value: "", confidence: 0, section: "main" },
-
-      // --- geometry_precision section (11) ---
-      { id: "geo-001", name: "{{geometry_attachment_no}}", value: "2", confidence: 95, section: "geometry_precision" },
-      { id: "geo-002", name: "{{geometry_item_no}}", value: "[{'geometry_item_no':'G1','geometry_test_item':'X轴线运动的直线度'}]", confidence: 90, section: "geometry_precision" },
-      { id: "geo-003", name: "{{geometry_note_no}}", value: "1", confidence: 95, section: "geometry_precision" },
-      { id: "geo-004", name: "{{geometry_note_text}}", value: "检测曲线见图1～图3。", confidence: 95, section: "geometry_precision" },
-      { id: "geo-005", name: "{{geometry_note_figure_no}}", value: "1～3", confidence: 95, section: "geometry_precision" },
-      { id: "geo-006", name: "{{figure_image_1_xy}}", value: "asset_library/images/img_002.jpeg", confidence: 92, section: "geometry_precision" },
-      { id: "geo-007", name: "{{figure_image_1_zx}}", value: "asset_library/images/img_003.jpeg", confidence: 92, section: "geometry_precision" },
-      { id: "geo-008", name: "{{figure_image_2_xy}}", value: "asset_library/images/img_005.jpeg", confidence: 92, section: "geometry_precision" },
-      { id: "geo-009", name: "{{figure_image_2_yz}}", value: "asset_library/images/img_006.jpeg", confidence: 92, section: "geometry_precision" },
-      { id: "geo-010", name: "{{figure_image_3_zx}}", value: "asset_library/images/img_008.jpeg", confidence: 92, section: "geometry_precision" },
-      { id: "geo-011", name: "{{figure_image_3_yz}}", value: "asset_library/images/img_009.jpeg", confidence: 92, section: "geometry_precision" },
-
-      // --- position_precision section (36) ---
-      { id: "pos-001", name: "{{position_attachment_no}}", value: "3", confidence: 95, section: "position_precision" },
-      { id: "pos-002", name: "{{position_item_no}}", value: "[{'item_no':'P1','test_item':'X轴定位精度'}]", confidence: 90, section: "position_precision" },
-      { id: "pos-003", name: "{{position_axis}}", value: "X轴", confidence: 95, section: "position_precision" },
-      { id: "pos-004", name: "{{position_target}}", value: "300.000", confidence: 96, section: "position_precision" },
-      { id: "pos-005", name: "{{position_approach_dir}}", value: "正向", confidence: 97, section: "position_precision" },
-      { id: "pos-006", name: "{{position_stroke_mm}}", value: "700", confidence: 94, section: "position_precision" },
-      { id: "pos-007", name: "{{position_tolerance_um}}", value: "8.0", confidence: 93, section: "position_precision" },
-      { id: "pos-008", name: "{{position_measured_r1}}", value: "299.998", confidence: 96, section: "position_precision" },
-      { id: "pos-009", name: "{{position_error_r1}}", value: "-2.0", confidence: 94, section: "position_precision" },
-      { id: "pos-010", name: "{{position_measured_r2}}", value: "300.001", confidence: 96, section: "position_precision" },
-      { id: "pos-011", name: "{{position_error_r2}}", value: "1.0", confidence: 94, section: "position_precision" },
-      { id: "pos-012", name: "{{position_measured_r3}}", value: "300.003", confidence: 96, section: "position_precision" },
-      { id: "pos-013", name: "{{position_error_r3}}", value: "3.0", confidence: 94, section: "position_precision" },
-      { id: "pos-014", name: "{{position_reversal_value}}", value: "1.5", confidence: 92, section: "position_precision" },
-      { id: "pos-015", name: "{{position_mean_error}}", value: "0.7", confidence: 93, section: "position_precision" },
-      { id: "pos-016", name: "{{position_std_dev}}", value: "2.08", confidence: 93, section: "position_precision" },
-      { id: "pos-017", name: "{{position_uncertainty_u}}", value: "4.16", confidence: 90, section: "position_precision" },
-      { id: "pos-018", name: "{{position_conclusion}}", value: "符合", confidence: 97, section: "position_precision" },
-      // Y-axis
-      { id: "pos-019", name: "{{position_axis_2}}", value: "Y轴", confidence: 95, section: "position_precision" },
-      { id: "pos-020", name: "{{position_target_2}}", value: "200.000", confidence: 96, section: "position_precision" },
-      { id: "pos-021", name: "{{position_stroke_mm_2}}", value: "500", confidence: 94, section: "position_precision" },
-      { id: "pos-022", name: "{{position_tolerance_um_2}}", value: "6.0", confidence: 93, section: "position_precision" },
-      { id: "pos-023", name: "{{position_measured_r1_2}}", value: "199.997", confidence: 96, section: "position_precision" },
-      { id: "pos-024", name: "{{position_measured_r2_2}}", value: "200.002", confidence: 96, section: "position_precision" },
-      { id: "pos-025", name: "{{position_measured_r3_2}}", value: "200.001", confidence: 96, section: "position_precision" },
-      { id: "pos-026", name: "{{position_reversal_value_2}}", value: "1.2", confidence: 92, section: "position_precision" },
-      { id: "pos-027", name: "{{position_mean_error_2}}", value: "0.0", confidence: 93, section: "position_precision" },
-      { id: "pos-028", name: "{{position_std_dev_2}}", value: "1.73", confidence: 93, section: "position_precision" },
-      { id: "pos-029", name: "{{position_uncertainty_u_2}}", value: "3.46", confidence: 90, section: "position_precision" },
-      { id: "pos-030", name: "{{position_conclusion_2}}", value: "符合", confidence: 97, section: "position_precision" },
-      // Z-axis
-      { id: "pos-031", name: "{{position_axis_3}}", value: "Z轴", confidence: 95, section: "position_precision" },
-      { id: "pos-032", name: "{{position_target_3}}", value: "150.000", confidence: 96, section: "position_precision" },
-      { id: "pos-033", name: "{{position_stroke_mm_3}}", value: "360", confidence: 94, section: "position_precision" },
-      { id: "pos-034", name: "{{position_tolerance_um_3}}", value: "6.0", confidence: 93, section: "position_precision" },
-      { id: "pos-035", name: "{{position_measured_r1_3}}", value: "149.996", confidence: 96, section: "position_precision" },
-      { id: "pos-036", name: "{{position_conclusion_3}}", value: "符合", confidence: 97, section: "position_precision" },
+      { id: "dev-main-inspection-item", name: "{{inspection_item}}", value: "平面度", confidence: 98, section: "main" },
+      { id: "dev-main-measure-position", name: "{{measure_position}}", value: "左侧工作面", confidence: 96, section: "main" },
+      { id: "dev-main-actual-value", name: "{{actual_value}}", value: "0.012 mm", confidence: 98, section: "main" },
+      { id: "dev-main-standard-value", name: "{{standard_value}}", value: "0.020 mm", confidence: 97, section: "main" },
+      { id: "dev-main-unit", name: "{{unit}}", value: "mm", confidence: 100, section: "main" },
+      { id: "dev-main-judgement", name: "{{judgement}}", value: "合格", confidence: 99, section: "main" },
+      { id: "dev-geo-attachment", name: "{{geometry_attachment_no}}", value: "2", confidence: 95, section: "geometry_precision" },
+      { id: "dev-geo-item", name: "{{geometry_item_no}}", value: "G1", confidence: 93, section: "geometry_precision" },
+      { id: "dev-geo-note", name: "{{geometry_note_text}}", value: "检测曲线见图1。", confidence: 91, section: "geometry_precision" },
+      { id: "dev-pos-axis", name: "{{position_axis}}", value: "X轴", confidence: 95, section: "position_precision" },
+      { id: "dev-pos-target", name: "{{position_target}}", value: "300.000", confidence: 96, section: "position_precision" },
+      { id: "dev-pos-conclusion", name: "{{position_conclusion}}", value: "符合", confidence: 97, section: "position_precision" },
+    ];
+    const mockEvents: ParseEvent[] = [
+      { time: nowTime(), label: "开发 Mock：上传完成", state: "done" },
+      { time: nowTime(), label: "开发 Mock：字段提取完成", state: "done" },
+      { time: nowTime(), label: "开发 Mock：结构化结果已写入前端临时状态", state: "done" },
     ];
 
-    setFieldSets((current) => {
-      const next = { ...current };
-      for (const fileId of Object.keys(next)) {
-        next[fileId] = mockFields;
-      }
-      return next;
-    });
+    setWorkflowJobId("dev-mock-job");
+    setActiveRunId(`dev-mock-run-${projectId}`);
+    setFieldsApproved(false);
+    setWorkflowStatus("succeeded");
+    setWorkflowEvents([
+      { time: nowTime(), label: "开发 Mock：Validate completed", state: "done" },
+      { time: nowTime(), label: "开发 Mock：Prepare completed", state: "done" },
+      { time: nowTime(), label: "开发 Mock：Extract completed", state: "done" },
+      { time: nowTime(), label: "开发 Mock：Extracted: 3 section(s), 0 issue(s)", state: "done" },
+    ]);
+    setUploaded(targetFiles);
+    setFieldSets(Object.fromEntries(targetFileIds.map((fileId) => [fileId, mockFields])));
+    setParseEventSets(Object.fromEntries(targetFileIds.map((fileId) => [fileId, mockEvents])));
+    setActivePreviewFileId(targetFileIds[0] ?? "");
+    setActiveParseFileId(targetFileIds[0] ?? "");
+    setParseProgress(100);
+    setNotice("开发 Mock 已注入：仅用于前端流程联调，未写入数据库，发布前需删除。");
+  }
 
-    setNotice("Mock 数据已注入 — 82 个字段、3 个 section、4 阶段工作流完成。");
+  async function approveExtractedFields() {
+    if (approvingFields || previewFieldsApproved) return;
+    const targetRunId = previewFile?.parseRunId ?? activeRunId;
+    if (!targetRunId || targetRunId.startsWith("dev-mock-run-")) {
+      setFieldsApproved(true);
+      setNotice("字段人工审核已通过，可点击查看报告进入报告生成页面。");
+      return;
+    }
+    if (!previewFile?.parseRunPath) {
+      setNotice("该文件缺少历史工作区信息，请重新解析后再审核。");
+      return;
+    }
+    setApprovingFields(true);
+    try {
+      await genReportApi.approveRun(targetRunId);
+      await refreshProjectRecords();
+      setNotice("字段人工审核已通过，可点击查看报告进入报告生成页面。");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "字段审核通过接口调用失败，请稍后重试。");
+    } finally {
+      setApprovingFields(false);
+    }
   }
 
   return (
@@ -1213,20 +1537,20 @@ export function RecordsClient({
               <Download className="size-4" />
               导出结果
             </Button>
-            <Button variant="ghost" onClick={seedMockWorkflow} title="注入假 workflow 数据用于 UI 验收">
+            <Button variant="ghost" onClick={seedDevelopmentMockWorkflow} title="开发调试入口：仅写入前端临时状态，发布前删除">
               <Eye className="size-4" />
-              Mock
+              开发 Mock
             </Button>
             {generateReady ? (
-              <Link href="/reports">
+              <Link href={reportHref}>
                 <Button variant="primary">
-                  {workflowStatus === "succeeded" ? "查看报告" : "生成报告"}
+                  查看报告
                   <ArrowRight className="size-4" />
                 </Button>
               </Link>
             ) : (
               <Button variant="primary" disabled loading={activeCount > 0} loadingText="解析中">
-                生成报告
+                {successfulFields.length > 0 && !activeReportRunId ? "审核通过后查看报告" : "生成报告"}
                 <ArrowRight className="size-4" />
               </Button>
             )}
@@ -1339,7 +1663,18 @@ export function RecordsClient({
               columns={["22%", "9%", "10%", "16%", "18%", "14%", "11%"]}
               headers={["文件名", "类型", "大小", "上传时间", "检测类型", "解析状态", "操作"]}
             >
-              {uploaded.map((file) => (
+              {uploaded.length === 0 ? (
+                <tr>
+                  <Td colSpan={7} className="py-10 text-center">
+                    <div className="mx-auto max-w-md">
+                      <p className="text-base font-medium text-ink-black">当前项目暂无已上传文件</p>
+                      <p className="mt-2 text-sm leading-6 text-warm-stone">
+                        请先在上方上传检测原始记录，上传成功后文件会保存在后端数据表中，再次进入项目仍可查看。
+                      </p>
+                    </div>
+                  </Td>
+                </tr>
+              ) : uploaded.map((file) => (
                 <tr key={file.id}>
                   <Td className="break-words text-center font-medium leading-5">{file.name}</Td>
                   <Td className="text-center">{file.type}</Td>
@@ -1388,17 +1723,15 @@ export function RecordsClient({
                       >
                         {previewingFileId === file.id ? <Loader2 className="size-4 animate-spin" /> : <FileSearch className="size-4" />}
                       </button>
-                      {file.parseStatus === "解析失败" ? (
-                        <button
-                          type="button"
-                          title="重试解析"
-                          disabled={retryingFileIds.has(file.id) || retryingAllFailed}
-                          onClick={() => void retryFile(file.id)}
-                          className="rounded-md p-1.5 text-warm-stone transition hover:bg-ink-black/10 hover:text-ink-black disabled:cursor-not-allowed disabled:opacity-45"
-                        >
-                          {retryingFileIds.has(file.id) ? <Loader2 className="size-4 animate-spin" /> : <RefreshCcw className="size-4" />}
-                        </button>
-                      ) : null}
+                      <button
+                        type="button"
+                        title={file.parseStatus === "解析失败" ? "重试解析" : "重新解析"}
+                        disabled={retryingFileIds.has(file.id) || retryingAllFailed}
+                        onClick={() => void reparseFile(file.id)}
+                        className="rounded-md p-1.5 text-warm-stone transition hover:bg-ink-black/10 hover:text-ink-black disabled:cursor-not-allowed disabled:opacity-45"
+                      >
+                        {retryingFileIds.has(file.id) ? <Loader2 className="size-4 animate-spin" /> : <RefreshCcw className="size-4" />}
+                      </button>
                       <button
                         type="button"
                         title="删除文件"
@@ -1415,7 +1748,7 @@ export function RecordsClient({
             </DataTable>
           </Card>
 
-          <div className="grid gap-3.5 lg:grid-cols-[minmax(0,1fr)_260px]">
+          <div className="grid gap-3.5">
             <Card>
               <div className="flex items-center justify-between gap-3">
                 <h2 className="serif text-[1.75rem] leading-tight">解析进度</h2>
@@ -1488,7 +1821,7 @@ export function RecordsClient({
                       ) : workflowStatus === "failed" ? (
                         <AlertTriangle className="size-3.5" />
                       ) : null}
-                      报告生成工作流
+                      字段提取工作流
                     </span>
                     <Badge tone={workflowStatus === "succeeded" ? "success" : workflowStatus === "failed" ? "danger" : "active"}>
                       {workflowStatus === "succeeded" ? "已完成" : workflowStatus === "failed" ? "失败" : "进行中"}
@@ -1563,16 +1896,6 @@ export function RecordsClient({
                 </div>
               </div>
             </Card>
-
-            <Card>
-              <h2 className="serif text-[1.75rem] leading-tight">模板加载内容</h2>
-              <div className="mt-3 flex flex-wrap gap-2">
-                {templateRules.map((rule) => (
-                  <Badge key={rule} tone="neutral">{rule}</Badge>
-                ))}
-              </div>
-              <p className="mt-3 text-xs leading-5 text-warm-stone">模板内容已用于字段映射、规则校验和大模型提示词装配。</p>
-            </Card>
           </div>
 
           {failedFiles.length > 0 ? (
@@ -1605,9 +1928,6 @@ export function RecordsClient({
             </Card>
           )}
 
-          <Card lavender>
-            <p className="text-sm leading-6 text-graphite">{notice}</p>
-          </Card>
         </div>
 
         <aside className="min-[1180px]:sticky min-[1180px]:top-20 min-[1180px]:self-start">
@@ -1617,6 +1937,7 @@ export function RecordsClient({
               <Button
                 variant="ghost"
                 onClick={() => setAllFieldsOpen(true)}
+                disabled={previewFileIsExtracting || editableFields.length === 0}
               >
                 全部字段
                 {editableFields.length > 0 ? (
@@ -1655,12 +1976,42 @@ export function RecordsClient({
               </div>
             </div>
             <p className="mt-2 text-xs leading-5 text-warm-stone">
-              {activeRunId
+              {previewFileIsExtracting
+                ? "字段正在从原始记录中提取，完成后将自动展示。"
+                : activeRunId
                 ? "点击字段可人工修正，保存后同步至报告工作区。"
                 : "点击字段可人工修正，保存后字段来源标记为人工校核。"}
             </p>
+            {previewFile?.parseStatus === "解析成功" && !previewRunReady ? (
+              <p className="mt-2 rounded-md border border-[#b88200]/35 bg-[#fff7dd] p-2 text-xs leading-5 text-[#7a5700]">
+                该文件缺少历史 run 或工作区信息，请重新解析后再审核。
+              </p>
+            ) : null}
             <div className="mt-3 space-y-3">
-              {previewFieldGroups.length > 0 ? (
+              {previewFileIsExtracting ? (
+                <div className="rounded-lg border border-ink-black/12 bg-parchment-cream/55 p-3">
+                  <div className="flex items-center gap-2">
+                    <Loader2 className="size-4 animate-spin" />
+                    <div>
+                      <p className="text-sm font-medium">正在提取字段</p>
+                      <p className="mt-0.5 text-xs text-warm-stone">系统正在执行结构化解析，字段结果暂不展示。</p>
+                    </div>
+                  </div>
+                  <div className="mt-4 space-y-2">
+                    {[0, 1, 2, 3].map((item) => (
+                      <div
+                        key={item}
+                        className="animate-pulse rounded-lg border border-ink-black/10 bg-parchment-cream/70 p-2"
+                        style={{ animationDelay: `${item * 120}ms` }}
+                      >
+                        <div className="h-2 w-24 rounded-full bg-ink-black/12" />
+                        <div className="mt-2 h-3 rounded-full bg-ink-black/18" />
+                        <div className="mt-2 h-1 rounded-full bg-ink-black/10" />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : previewFieldGroups.length > 0 ? (
                 <>
                 {previewFieldGroups.map((group) => (
                   <div key={group.section}>
@@ -1696,19 +2047,51 @@ export function RecordsClient({
                   </div>
                 ))}
                 {hiddenPreviewFieldCount > 0 ? (
-                  <button
-                    type="button"
-                    onClick={() => setAllFieldsOpen(true)}
-                    className="focus-ring w-full rounded-lg border border-dashed border-ink-black/25 bg-parchment-cream/55 px-3 py-2 text-left text-xs text-graphite transition hover:border-ink-black hover:bg-parchment-cream"
-                  >
-                    还有 {hiddenPreviewFieldCount} 个字段未在预览中展示，点击查看全部字段。
-                  </button>
+                  <div className="grid gap-2 rounded-lg border border-dashed border-ink-black/25 bg-parchment-cream/55 p-2.5">
+                    <div className="grid gap-2">
+                      <p className="px-1 text-xs leading-5 text-graphite">
+                        还有 {hiddenPreviewFieldCount} 个字段未在预览中展示。
+                      </p>
+                      <Button className="w-full" variant="ghost" onClick={() => setAllFieldsOpen(true)}>
+                        <Eye className="size-4" />
+                        查看全部字段
+                      </Button>
+                    </div>
+                    <div className="border-t border-dashed border-ink-black/25 pt-2">
+                    <Button
+                      className="w-full"
+                      variant="secondary"
+                      onClick={() => void approveExtractedFields()}
+                      disabled={editableFields.length === 0 || previewFieldsApproved || !previewRunReady}
+                      loading={approvingFields}
+                      loadingText="审核中"
+                    >
+                      {previewFieldsApproved ? <CheckCircle2 className="size-4" /> : <Check className="size-4" />}
+                      {previewFieldsApproved ? "已审核通过" : "审核通过"}
+                    </Button>
+                    </div>
+                  </div>
+                ) : null}
+                {hiddenPreviewFieldCount === 0 && editableFields.length > 0 ? (
+                  <div className="border-t border-dashed border-ink-black/25 pt-2">
+                    <Button
+                      className="w-full"
+                      variant="secondary"
+                      onClick={() => void approveExtractedFields()}
+                      disabled={previewFieldsApproved || !previewRunReady}
+                      loading={approvingFields}
+                      loadingText="审核中"
+                    >
+                      {previewFieldsApproved ? <CheckCircle2 className="size-4" /> : <Check className="size-4" />}
+                      {previewFieldsApproved ? "已审核通过" : "审核通过"}
+                    </Button>
+                  </div>
                 ) : null}
                 </>
               ) : (
                 <p className="rounded-md border border-ink-black/10 p-3 text-sm text-warm-stone">
-                  {workflowJobId && (workflowStatus === "running" || workflowStatus === "queued")
-                    ? "字段提取中，完成后将自动展示…"
+                  {previewFile?.parseStatus === "解析成功"
+                    ? "字段提取完成，但暂无可预览字段。"
                     : "暂无提取字段，请先上传文件并开始解析。"}
                 </p>
               )}
@@ -1926,6 +2309,12 @@ export function RecordsClient({
         </div>
       ) : null}
 
+      {notice ? (
+        <div className="fixed bottom-4 left-1/2 z-50 max-w-[min(92vw,560px)] -translate-x-1/2 rounded-lg border border-ink-black bg-parchment-cream px-4 py-3 text-sm font-medium text-ink-black shadow-editorial">
+          {notice}
+        </div>
+      ) : null}
+
       {allFieldsOpen ? (
         <div className="fixed inset-0 z-30 bg-ink-black/35 p-4 backdrop-blur-sm">
           <div className="ml-auto flex h-full w-full max-w-[520px] flex-col rounded-xl border border-ink-black bg-parchment-cream p-4 shadow-editorial">
@@ -1990,10 +2379,9 @@ export function RecordsClient({
               <Button variant="ghost" onClick={() => setAllFieldsOpen(false)}>取消</Button>
               <Button
                 variant="primary"
-                onClick={() => {
-                  setAllFieldsOpen(false);
-                  setNotice("全部字段已完成一次人工预览，修改内容保存在前端 mock 状态中。");
-                }}
+                onClick={() => void saveAllFields()}
+                loading={savingAllFields}
+                loadingText="保存中"
               >
                 保存字段
               </Button>
@@ -2186,7 +2574,7 @@ export function RecordsClient({
                         打开原文件
                       </a>
                     ) : (
-                      <p className="mt-4 rounded-md border border-ink-black/12 p-3 text-sm text-warm-stone">该记录来自 mock 数据，未绑定本地原始文件。</p>
+                      <p className="mt-4 rounded-md border border-ink-black/12 p-3 text-sm text-warm-stone">该记录未绑定可读取的本地原始文件。</p>
                     )}
                   </div>
                 </div>
@@ -2207,7 +2595,7 @@ export function RecordsClient({
                   <div className="max-w-[420px]">
                     <FileSearch className="mx-auto size-8 text-graphite" />
                     <h3 className="mt-4 text-base font-medium">暂无原文件预览</h3>
-                    <p className="mt-2 text-sm leading-6 text-warm-stone">该记录来自 mock 数据，未绑定可读取的本地上传文件。</p>
+                    <p className="mt-2 text-sm leading-6 text-warm-stone">该记录未绑定可读取的本地上传文件。</p>
                   </div>
                 </div>
               ) : null}
