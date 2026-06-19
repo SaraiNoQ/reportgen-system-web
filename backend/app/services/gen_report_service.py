@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import json
 import os
 import platform
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from fastapi import HTTPException
 from gen_report.workflow.service import WorkflowService
+
+from app.services.manifest_builder import _WORKSPACES_ROOT
 
 STATUS_LABELS = {
     "prepared": "解析中",
@@ -26,6 +30,8 @@ class GenReportService:
     def __init__(self, workflow_service: WorkflowService | None = None) -> None:
         self._workflow = workflow_service or WorkflowService()
         self._run_paths: dict[str, Path] = {}
+        self._set_field_locks: dict[str, Lock] = {}
+        self._set_field_locks_guard = Lock()
 
     def validate_manifest(self, manifest_path: str) -> dict[str, Any]:
         path = self._resolve_existing_file(manifest_path, "Manifest")
@@ -85,6 +91,10 @@ class GenReportService:
             run_paths[str(run_id)] = str(resolved)
         return run_paths
 
+    def register_run_path(self, run_id: str, run_path: str | Path) -> None:
+        """Register a run path so individual endpoints work during workflow execution."""
+        self._run_paths[run_id] = Path(run_path).resolve()
+
     def get_run_status(self, run_id: str) -> dict[str, Any]:
         run_path = self._require_run_path(run_id)
         raw = self._workflow.status(str(run_path))
@@ -92,7 +102,41 @@ class GenReportService:
 
     def set_field(self, run_id: str, section: str, field: str, value: str) -> dict[str, Any]:
         run_path = self._require_run_path(run_id)
-        return self._workflow.set_field(str(run_path), section, field, value)
+        with self._set_field_locks_guard:
+            lock = self._set_field_locks.setdefault(run_id, Lock())
+        with lock:
+            return self._workflow.set_field(str(run_path), section, field, value)
+
+    def get_fields(self, run_id: str) -> dict[str, Any]:
+        """Read all fill_payloads for a run and return as a flat field list."""
+        run_path = self._require_run_path(run_id)
+        payloads_dir = run_path / "fill_payloads"
+        if not payloads_dir.is_dir():
+            return {"fields": [], "sections": []}
+
+        sections: list[str] = []
+        all_fields: list[dict[str, Any]] = []
+        for fpath in sorted(payloads_dir.iterdir()):
+            if fpath.suffix != ".json":
+                continue
+            section_name = fpath.stem
+            sections.append(section_name)
+            try:
+                entries: list[dict[str, Any]] = json.loads(fpath.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                all_fields.append({
+                    "id": f"{run_id}-{section_name}-{entry.get('placeholder', '')}",
+                    "section": section_name,
+                    "name": entry.get("placeholder", ""),
+                    "value": str(entry.get("value", "")),
+                    "confidence": 95 if entry.get("evidence") else 70,
+                    "source": entry.get("source", ""),
+                })
+        return {"fields": all_fields, "sections": sections}
 
     def refresh_inputs(self, run_id: str) -> dict[str, Any]:
         run_path = self._require_run_path(run_id)
@@ -123,11 +167,28 @@ class GenReportService:
     def _require_run_path(self, run_id: str) -> Path:
         run_path = self._run_paths.get(run_id)
         if run_path is None:
+            run_path = self._recover_run_path(run_id)
+        if run_path is None:
             raise HTTPException(
                 status_code=404,
                 detail=f"Unknown run_id '{run_id}'. Start a workflow run first.",
             )
         return run_path
+
+    def _recover_run_path(self, run_id: str) -> Path | None:
+        """Recover deterministic project workspaces after a backend restart."""
+        candidates: list[Path] = []
+        if run_id.startswith("report-"):
+            project_id = run_id.removeprefix("report-")
+            candidates.append(_WORKSPACES_ROOT / project_id / "work" / run_id)
+        candidates.extend(_WORKSPACES_ROOT.glob(f"*/work/{run_id}"))
+
+        for candidate in candidates:
+            resolved = candidate.resolve()
+            if resolved.is_dir() and (resolved / "status.json").is_file():
+                self._run_paths[run_id] = resolved
+                return resolved
+        return None
 
     @staticmethod
     def _assert_inside_run_path(run_path: Path, path: Path) -> None:
