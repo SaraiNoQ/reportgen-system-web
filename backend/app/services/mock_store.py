@@ -55,6 +55,22 @@ def now_time() -> str:
     return datetime.now().strftime("%H:%M:%S")
 
 
+def _remove_uploaded_file(server_path: str) -> None:
+    """Remove an uploaded file and its parent directory if empty."""
+    fpath = Path(server_path)
+    try:
+        if fpath.is_file():
+            fpath.unlink()
+        parent = fpath.parent
+        if parent.is_dir() and not any(parent.iterdir()):
+            parent.rmdir()
+            grandparent = parent.parent
+            if grandparent.is_dir() and not any(grandparent.iterdir()):
+                grandparent.rmdir()
+    except OSError:
+        pass  # best-effort cleanup
+
+
 class MockStore:
     def __init__(self) -> None:
         self._file_ids = count(3)
@@ -123,48 +139,14 @@ class MockStore:
             ),
         ]
         self.deleted_projects: list[DeletedProjectRecord] = []
-        self.raw_files: list[RawFile] = [
-            RawFile(
-                id="f1",
-                name="平面度检测记录.xlsx",
-                type="Excel",
-                size="1.12 MB",
-                uploadedAt="2024-05-20 10:30",
-                parseStatus="解析成功",
-                detectedType="几何精度",
-                typeConfirmed=False,
-            ),
-            RawFile(
-                id="f2",
-                name="设备照片_01.jpg",
-                type="JPG",
-                size="3.21 MB",
-                uploadedAt="2024-05-20 10:31",
-                parseStatus="解析失败",
-                detectedType="未识别",
-                typeConfirmed=False,
-            ),
-        ]
+        self.raw_files: list[RawFile] = []
         self.default_parse_events: list[ParseEvent] = [
             ParseEvent(time="10:30:15", label="开始解析文件", state="done"),
             ParseEvent(time="10:30:20", label="表格检测完成，识别到 8 个表格", state="done"),
             ParseEvent(time="10:30:30", label="大模型提取中...", state="active"),
             ParseEvent(time="10:30:45", label="已提取 24/34 个字段", state="pending"),
         ]
-        self.parse_events: dict[str, list[ParseEvent]] = {
-            "f1": [
-                ParseEvent(time="10:30:15", label="开始解析文件", state="done"),
-                ParseEvent(time="10:30:20", label="OCR/结构化解析完成", state="done"),
-                ParseEvent(time="10:30:30", label="字段提取完成", state="done"),
-                ParseEvent(time="10:30:45", label="结构化结果已写入字段库", state="done"),
-            ],
-            "f2": [
-                ParseEvent(time="10:31:15", label="开始解析文件", state="done"),
-                ParseEvent(
-                    time="10:31:22", label="表格边界识别失败，等待人工处理", state="pending"
-                ),
-            ],
-        }
+        self.parse_events: dict[str, list[ParseEvent]] = {}
         self.base_fields: list[ExtractedField] = [
             ExtractedField(id="e1", name="检验项目", value="平面度", confidence=98),
             ExtractedField(id="e2", name="测量位置", value="左侧工作面", confidence=96),
@@ -681,6 +663,7 @@ class MockStore:
         file_name: str,
         file_format: str,
         section_id: str | None = None,
+        file_path: str | None = None,
     ) -> ReportDelivery:
         delivery = ReportDelivery(
             id=f"d{next(self._delivery_ids)}",
@@ -690,6 +673,7 @@ class MockStore:
             format=file_format,
             status="ready",
             sectionId=section_id,
+            filePath=file_path,
             createdAt=now_text(),
         )
         self.report_deliveries.insert(0, delivery)
@@ -984,12 +968,19 @@ class MockStore:
     def get_log(self, log_id: str) -> OperationLog | None:
         return next((log for log in self.logs if log.id == log_id), None)
 
-    def upload_files(self, files: list[UploadItem]) -> list[RawFile]:
+    def list_record_files(self, project_id: str | None = None) -> list[RawFile]:
+        files = self.raw_files
+        if project_id:
+            files = [file for file in files if file.projectId == project_id]
+        return self.snapshot(files)
+
+    def upload_files(self, files: list[UploadItem], project_id: str | None = None) -> list[RawFile]:
         uploaded_at = now_text()
         created: list[RawFile] = []
         for item in files:
             file = RawFile(
                 id=f"f{next(self._file_ids)}",
+                projectId=project_id,
                 name=item.name,
                 type=item.type,
                 size=item.size,
@@ -1004,9 +995,144 @@ class MockStore:
                 ParseEvent(time=now_time(), label="上传完成，等待解析调度", state="done"),
                 ParseEvent(time=now_time(), label="已创建大模型抽取任务", state="active"),
             ]
-            self.fields_by_file[file.id] = self.create_field_set(file.id, len(self.raw_files) - 1)
+            self.fields_by_file[file.id] = []
         self.add_log("原始记录上传", "张工", f"批量上传 {len(created)} 个文件")
+        self.save_all()
         return created
+
+    def replace_file_fields(self, file_id: str, fields: list[ExtractedField]) -> None:
+        self.fields_by_file[file_id] = [
+            field.model_copy(update={"id": f"{file_id}-{field.id}"})
+            for field in fields
+        ]
+        self.reset_file_approval(file_id)
+        self.save_all()
+
+    def bind_file_run_metadata(
+        self,
+        file_ids: list[str],
+        job_id: str | None = None,
+        run_id: str | None = None,
+        run_path: str | None = None,
+    ) -> None:
+        changed = False
+        for index, file in enumerate(self.raw_files):
+            if file.id not in file_ids:
+                continue
+            update: dict[str, object | None] = {
+                "fieldsApproved": False,
+                "approvedAt": None,
+            }
+            if job_id is not None:
+                update["parseJobId"] = job_id
+            if run_id is not None:
+                update["parseRunId"] = run_id
+            if run_path is not None:
+                update["parseRunPath"] = run_path
+            self.raw_files[index] = file.model_copy(update=update)
+            changed = True
+        if changed:
+            self.save_all()
+
+    def reset_file_approval(self, file_id: str) -> None:
+        for index, file in enumerate(self.raw_files):
+            if file.id == file_id:
+                self.raw_files[index] = file.model_copy(
+                    update={"fieldsApproved": False, "approvedAt": None}
+                )
+                return
+
+    def reset_run_approval(self, run_id: str) -> None:
+        changed = False
+        for index, file in enumerate(self.raw_files):
+            if file.parseRunId == run_id:
+                self.raw_files[index] = file.model_copy(
+                    update={"fieldsApproved": False, "approvedAt": None}
+                )
+                changed = True
+        if changed:
+            self.save_all()
+
+    def update_run_field_value(
+        self,
+        run_id: str,
+        section: str,
+        field_name: str,
+        value: str,
+    ) -> int:
+        changed = 0
+        for file in self.raw_files:
+            if file.parseRunId != run_id:
+                continue
+            fields = self.fields_by_file.setdefault(file.id, [])
+            for index, field in enumerate(fields):
+                if field.name != field_name:
+                    continue
+                if (field.section or "main") != section:
+                    continue
+                fields[index] = field.model_copy(update={"value": value, "confidence": 100})
+                changed += 1
+        if changed:
+            self.reset_run_approval(run_id)
+            self.add_log("原始记录上传", "张工", f"人工修正字段：{field_name}")
+            self.save_all()
+        return changed
+
+    def mark_files_fields_approved(self, run_id: str) -> None:
+        approved_at = now_iso()
+        changed = False
+        for index, file in enumerate(self.raw_files):
+            if file.parseRunId == run_id:
+                self.raw_files[index] = file.model_copy(
+                    update={"fieldsApproved": True, "approvedAt": approved_at}
+                )
+                changed = True
+        if changed:
+            self.save_all()
+
+    def _append_unique_parse_event(self, file_id: str, label: str) -> None:
+        events = self.parse_events.setdefault(file_id, [])
+        if any(event.label == label for event in events):
+            return
+        events.append(ParseEvent(time=now_time(), label=label, state="pending"))
+
+    def validate_record_workspaces(self, project_id: str | None = None) -> None:
+        changed = False
+        for index, file in enumerate(self.raw_files):
+            if project_id and file.projectId != project_id:
+                continue
+            label = ""
+            if (
+                file.parseStatus != "解析中"
+                and file.parseRunPath
+                and not (Path(file.parseRunPath) / "status.json").is_file()
+            ):
+                label = "历史解析工作区不存在，请重新解析"
+            elif file.parseStatus == "解析成功" and (not file.parseRunId or not file.parseRunPath):
+                label = "缺少历史 run 信息，请重新解析"
+            elif file.parseStatus == "解析中" and not file.parseJobId:
+                label = "缺少解析任务信息，请重新解析"
+            if not label:
+                continue
+            self.raw_files[index] = file.model_copy(update={
+                "parseStatus": "解析失败",
+                "fieldsApproved": False,
+                "approvedAt": None,
+            })
+            self._append_unique_parse_event(file.id, label)
+            changed = True
+        if changed:
+            self.save_all()
+
+    def set_file_path(self, file_id: str, server_path: str) -> RawFile | None:
+        for index, file in enumerate(self.raw_files):
+            if file.id != file_id:
+                continue
+            updated = file.model_copy(update={"serverPath": server_path})
+            self.raw_files[index] = updated
+            self.save_all()
+            return updated
+        return None
 
     def update_file_type(self, file_id: str, detected_type: DetectedType) -> RawFile | None:
         for index, file in enumerate(self.raw_files):
@@ -1015,6 +1141,7 @@ class MockStore:
             updated = file.model_copy(update={"detectedType": detected_type, "typeConfirmed": True})
             self.raw_files[index] = updated
             self.add_log("原始记录上传", "张工", f"确认文件类型：{file.name} -> {detected_type}")
+            self.save_all()
             return updated
         return None
 
@@ -1022,7 +1149,11 @@ class MockStore:
         for index, file in enumerate(self.raw_files):
             if file.id != file_id:
                 continue
-            updated = file.model_copy(update={"parseStatus": parse_status})
+            updated = file.model_copy(update={
+                "parseStatus": parse_status,
+                "fieldsApproved": False,
+                "approvedAt": None,
+            })
             self.raw_files[index] = updated
             if parse_status == "解析中":
                 events = [ParseEvent(time=now_time(), label="重新进入解析队列", state="active")]
@@ -1032,6 +1163,8 @@ class MockStore:
                     ParseEvent(time=now_time(), label="字段提取完成", state="done"),
                     ParseEvent(time=now_time(), label="结构化结果已写入字段库", state="done"),
                 ]
+                if not self.fields_by_file.get(file_id):
+                    self.fields_by_file[file_id] = self.create_field_set(file_id, index)
                 log_result = "成功"
             else:
                 events = [
@@ -1049,6 +1182,7 @@ class MockStore:
                 f"{file.name} 解析状态更新为 {parse_status}",
                 log_result,
             )
+            self.save_all()
             return updated
         return None
 
@@ -1060,6 +1194,9 @@ class MockStore:
         self.parse_events.pop(file_id, None)
         self.fields_by_file.pop(file_id, None)
         self.add_log("原始记录上传", "张工", f"删除文件：{file.name}", "警告")
+        if file.serverPath:
+            _remove_uploaded_file(file.serverPath)
+        self.save_all()
         return True
 
     def get_file(self, file_id: str) -> RawFile | None:
@@ -1084,7 +1221,9 @@ class MockStore:
                 if field.id == field_id:
                     updated = field.model_copy(update={"value": payload.value, "confidence": 100})
                     fields[index] = updated
+                    self.reset_file_approval(file_id)
                     self.add_log("原始记录上传", "张工", f"人工修正字段：{field.name}")
+                    self.save_all()
                     return updated
         created = ExtractedField(
             id=f"{file_id}-manual-{next(self._field_ids)}",

@@ -3,7 +3,9 @@
 from __future__ import annotations  # noqa: E501
 
 from datetime import datetime
+from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import Integer, func, select, text
 from sqlalchemy import String as SAString
@@ -182,10 +184,7 @@ class PostgresStore:
     @property
     def raw_files(self) -> list[RawFile]:
         rows = self.db.execute(select(RawFileORM)).scalars().all()
-        return [RawFile(id=r.id, name=r.name, type=r.type, size=r.size,
-                        uploadedAt=r.uploaded_at, parseStatus=r.parse_status,
-                        detectedType=r.detected_type, typeConfirmed=r.type_confirmed)
-                for r in rows]
+        return [self._raw_file_schema(r) for r in rows]
 
     @property
     def rule_templates(self) -> list[RuleTemplate]:
@@ -225,7 +224,7 @@ class PostgresStore:
             select(ReportDeliveryORM).order_by(ReportDeliveryORM.created_at.desc())
         ).scalars().all()
         return [ReportDelivery(id=r.id, kind=r.kind, scope=r.scope,
-                               fileName=r.file_name, format=r.format,
+                               fileName=r.file_name, filePath=r.file_path, format=r.format,
                                status=r.status, sectionId=r.section_id,
                                createdAt=r.created_at.strftime("%Y-%m-%d %H:%M") if r.created_at else "")
                 for r in rows]
@@ -493,14 +492,42 @@ class PostgresStore:
 
     # ── files / records ──────────────────────────────────────
 
-    def upload_files(self, files: list[UploadItem]) -> list[RawFile]:
+    def _raw_file_schema(self, rf: RawFileORM) -> RawFile:
+        return RawFile(
+            id=rf.id,
+            projectId=rf.project_id,
+            name=rf.name,
+            type=rf.type,
+            size=rf.size or "",
+            uploadedAt=str(rf.uploaded_at) if rf.uploaded_at else "",
+            parseStatus=rf.parse_status,
+            detectedType=rf.detected_type,
+            typeConfirmed=rf.type_confirmed,
+            serverPath=rf.file_path or None,
+            parseJobId=rf.parse_job_id,
+            parseRunId=rf.parse_run_id,
+            parseRunPath=rf.parse_run_path,
+            fieldsApproved=bool(rf.fields_approved),
+            approvedAt=rf.approved_at,
+        )
+
+    def list_record_files(self, project_id: str | None = None) -> list[RawFile]:
+        stmt = select(RawFileORM)
+        if project_id:
+            stmt = stmt.where(RawFileORM.project_id == project_id)
+        rows = self.db.execute(stmt).scalars().all()
+        return [self._raw_file_schema(r) for r in rows]
+
+    def upload_files(self, files: list[UploadItem], project_id: str | None = None) -> list[RawFile]:
         ts = now_iso()
         created: list[RawFile] = []
         for item in files:
             fid = f"f{self._next_id('f', RawFileORM)}"
-            rf = RawFileORM(id=fid, name=item.name, type=item.type, size=item.size,
-                            uploaded_at=ts, parse_status="解析中",
-                            detected_type=item.detectedType, type_confirmed=False)
+            rf = RawFileORM(
+                id=fid, project_id=project_id, name=item.name, type=item.type,
+                size=item.size, uploaded_at=ts, parse_status="解析中",
+                detected_type=item.detectedType, type_confirmed=False,
+            )
             self.db.add(rf)
             self.db.flush()
             # events
@@ -509,22 +536,180 @@ class PostgresStore:
             self.db.add(ParseEventORM(file_id=fid, time=now_time(),
                                       label="已创建大模型抽取任务", state="active", sort_order=1))
             self.db.flush()
-            # fields — get base fields and copy for this file
-            base_fields = self.db.execute(
-                select(ExtractedFieldORM).where(ExtractedFieldORM.is_base.is_(True))
-            ).scalars().all()
-            for bf in base_fields:
-                self.db.add(ExtractedFieldORM(
-                    id=f"{fid}-{bf.id}", file_id=fid, name=bf.name,
-                    value=bf.value, confidence=max(88, bf.confidence - (len(self.raw_files) if hasattr(self, '_raw_files_count') else 0)),
-                    is_base=False,
-                ))
-            self.db.flush()
-            created.append(RawFile(id=rf.id, name=rf.name, type=rf.type, size=rf.size,
-                                   uploadedAt=rf.uploaded_at, parseStatus=rf.parse_status,
-                                   detectedType=rf.detected_type, typeConfirmed=rf.type_confirmed))
+            created.append(self._raw_file_schema(rf))
         self._add_log("原始记录上传", "张工", f"批量上传 {len(created)} 个文件")
         return created
+
+    def _copy_base_fields_for_file(self, file_id: str) -> None:
+        existing = self.db.execute(
+            select(func.count()).select_from(ExtractedFieldORM)
+            .where(ExtractedFieldORM.file_id == file_id)
+        ).scalar() or 0
+        if existing > 0:
+            return
+        base_fields = self.db.execute(
+            select(ExtractedFieldORM).where(ExtractedFieldORM.is_base.is_(True))
+        ).scalars().all()
+        for bf in base_fields:
+            self.db.add(ExtractedFieldORM(
+                id=f"{file_id}-{bf.id}",
+                file_id=file_id,
+                name=bf.name,
+                value=bf.value,
+                confidence=bf.confidence,
+                section=bf.section,
+                is_base=False,
+            ))
+
+    def replace_file_fields(self, file_id: str, fields: list[ExtractedField]) -> None:
+        rows = self.db.execute(
+            select(ExtractedFieldORM).where(
+                ExtractedFieldORM.file_id == file_id,
+                ExtractedFieldORM.is_base.is_(False),
+            )
+        ).scalars().all()
+        for row in rows:
+            self.db.delete(row)
+        for field in fields:
+            self.db.add(ExtractedFieldORM(
+                id=f"{file_id}-{field.id}",
+                file_id=file_id,
+                name=field.name,
+                value=field.value,
+                confidence=field.confidence,
+                section=field.section,
+                is_base=False,
+            ))
+        self.reset_file_approval(file_id)
+        self.db.flush()
+
+    def bind_file_run_metadata(
+        self,
+        file_ids: list[str],
+        job_id: str | None = None,
+        run_id: str | None = None,
+        run_path: str | None = None,
+    ) -> None:
+        if not file_ids:
+            return
+        rows = self.db.execute(
+            select(RawFileORM).where(RawFileORM.id.in_(file_ids))
+        ).scalars().all()
+        for rf in rows:
+            if job_id is not None:
+                rf.parse_job_id = job_id
+            if run_id is not None:
+                rf.parse_run_id = run_id
+            if run_path is not None:
+                rf.parse_run_path = run_path
+            rf.fields_approved = False
+            rf.approved_at = None
+        self.db.flush()
+
+    def reset_file_approval(self, file_id: str) -> None:
+        rf = self.db.get(RawFileORM, file_id)
+        if rf is None:
+            return
+        rf.fields_approved = False
+        rf.approved_at = None
+
+    def reset_run_approval(self, run_id: str) -> None:
+        rows = self.db.execute(
+            select(RawFileORM).where(RawFileORM.parse_run_id == run_id)
+        ).scalars().all()
+        for rf in rows:
+            rf.fields_approved = False
+            rf.approved_at = None
+        self.db.flush()
+
+    def update_run_field_value(
+        self,
+        run_id: str,
+        section: str,
+        field_name: str,
+        value: str,
+    ) -> int:
+        file_ids = [
+            row.id for row in self.db.execute(
+                select(RawFileORM).where(RawFileORM.parse_run_id == run_id)
+            ).scalars().all()
+        ]
+        if not file_ids:
+            return 0
+        rows = self.db.execute(
+            select(ExtractedFieldORM).where(
+                ExtractedFieldORM.file_id.in_(file_ids),
+                ExtractedFieldORM.name == field_name,
+                ExtractedFieldORM.section == section,
+            )
+        ).scalars().all()
+        for row in rows:
+            row.value = value
+            row.confidence = 100
+        if rows:
+            self.reset_run_approval(run_id)
+            self._add_log("原始记录上传", "张工", f"人工修正字段：{field_name}")
+            self.db.flush()
+        return len(rows)
+
+    def mark_files_fields_approved(self, run_id: str) -> None:
+        rows = self.db.execute(
+            select(RawFileORM).where(RawFileORM.parse_run_id == run_id)
+        ).scalars().all()
+        approved_at = now_iso()
+        for rf in rows:
+            rf.fields_approved = True
+            rf.approved_at = approved_at
+        self.db.flush()
+
+    def _append_unique_parse_event(self, file_id: str, label: str) -> None:
+        exists = self.db.execute(
+            select(func.count()).select_from(ParseEventORM)
+            .where(ParseEventORM.file_id == file_id, ParseEventORM.label == label)
+        ).scalar() or 0
+        if exists:
+            return
+        self.db.add(ParseEventORM(
+            file_id=file_id,
+            time=now_time(),
+            label=label,
+            state="pending",
+            sort_order=self._pe_next_sort(file_id),
+        ))
+
+    def validate_record_workspaces(self, project_id: str | None = None) -> None:
+        stmt = select(RawFileORM)
+        if project_id:
+            stmt = stmt.where(RawFileORM.project_id == project_id)
+        rows = self.db.execute(stmt).scalars().all()
+        for rf in rows:
+            label = ""
+            if (
+                rf.parse_status != "解析中"
+                and rf.parse_run_path
+                and not (Path(rf.parse_run_path) / "status.json").is_file()
+            ):
+                label = "历史解析工作区不存在，请重新解析"
+            elif rf.parse_status == "解析成功" and (not rf.parse_run_id or not rf.parse_run_path):
+                label = "缺少历史 run 信息，请重新解析"
+            elif rf.parse_status == "解析中" and not rf.parse_job_id:
+                label = "缺少解析任务信息，请重新解析"
+            if not label:
+                continue
+            rf.parse_status = "解析失败"
+            rf.fields_approved = False
+            rf.approved_at = None
+            self._append_unique_parse_event(rf.id, label)
+            self._add_log("大模型解析", "系统", f"{rf.name} {label}", "警告")
+        self.db.flush()
+
+    def set_file_path(self, file_id: str, server_path: str) -> RawFile | None:  # pragma: no cover — stub
+        rf = self.db.get(RawFileORM, file_id)
+        if rf is None:
+            return None
+        rf.file_path = server_path
+        self.db.flush()
+        return self._raw_file_schema(rf)
 
     def update_file_status(self, file_id: str, parse_status: ParseStatus,
                            detected_type: str = "") -> RawFile | None:
@@ -532,6 +717,8 @@ class PostgresStore:
         if rf is None:
             return None
         rf.parse_status = parse_status
+        rf.fields_approved = False
+        rf.approved_at = None
         if detected_type:
             rf.detected_type = detected_type
         if parse_status == "解析中":
@@ -548,6 +735,7 @@ class PostgresStore:
                               label="结构化结果已写入字段库", state="done",
                               sort_order=self._pe_next_sort(file_id) + 1),
             ]
+            self._copy_base_fields_for_file(file_id)
             log_result = "成功"
         else:
             events = [
@@ -560,9 +748,7 @@ class PostgresStore:
             self.db.add(ev)
         self._add_log("大模型解析", "系统", f"{rf.name} 解析状态更新为 {parse_status}", log_result)
         self.db.flush()
-        return RawFile(id=rf.id, name=rf.name, type=rf.type, size=rf.size,
-                       uploadedAt=rf.uploaded_at, parseStatus=rf.parse_status,
-                       detectedType=rf.detected_type, typeConfirmed=rf.type_confirmed)
+        return self._raw_file_schema(rf)
 
     def _pe_next_sort(self, file_id: str) -> int:
         m = self.db.execute(
@@ -582,14 +768,16 @@ class PostgresStore:
         rows = self.db.execute(
             select(ExtractedFieldORM).where(ExtractedFieldORM.file_id == file_id)
         ).scalars().all()
-        return [ExtractedField(id=r.id, name=r.name, value=r.value, confidence=r.confidence)
+        return [ExtractedField(id=r.id, name=r.name, value=r.value, confidence=r.confidence,
+                               section=r.section)
                 for r in rows]
 
     def get_base_fields(self) -> list[ExtractedField]:
         rows = self.db.execute(
             select(ExtractedFieldORM).where(ExtractedFieldORM.is_base.is_(True))
         ).scalars().all()
-        return [ExtractedField(id=r.id, name=r.name, value=r.value, confidence=r.confidence)
+        return [ExtractedField(id=r.id, name=r.name, value=r.value, confidence=r.confidence,
+                               section=r.section)
                 for r in rows]
 
     def add_manual_field(self, file_id: str, payload: Any) -> ExtractedField:
@@ -601,7 +789,8 @@ class PostgresStore:
         self.update_file_status(file_id, "解析成功")
         self._add_log("原始记录上传", "张工", f"人工补录字段：{payload.name}")
         self.db.flush()
-        return ExtractedField(id=ef.id, name=ef.name, value=ef.value, confidence=ef.confidence)
+        return ExtractedField(id=ef.id, name=ef.name, value=ef.value, confidence=ef.confidence,
+                              section=ef.section)
 
     # ── rules ────────────────────────────────────────────────
 
@@ -765,14 +954,16 @@ class PostgresStore:
                              actor=rv.actor, kind=rv.kind)
 
     def add_report_delivery(self, kind: str, scope: str, file_name: str,
-                            file_format: str, section_id: str | None = None) -> ReportDelivery:
+                            file_format: str, section_id: str | None = None,
+                            file_path: str | None = None) -> ReportDelivery:
         did = f"d{self._next_id('d', ReportDeliveryORM)}"
         rd = ReportDeliveryORM(id=did, kind=kind, scope=scope, file_name=file_name,
-                               format=file_format, status="ready", section_id=section_id)
+                               file_path=file_path, format=file_format, status="ready",
+                               section_id=section_id)
         self.db.add(rd)
         self.db.flush()
         return ReportDelivery(id=rd.id, kind=rd.kind, scope=rd.scope,
-                               fileName=rd.file_name, format=rd.format,
+                               fileName=rd.file_name, filePath=rd.file_path, format=rd.format,
                                status=rd.status, sectionId=rd.section_id,
                                createdAt=rd.created_at.strftime("%Y-%m-%d %H:%M") if rd.created_at else "")
 
@@ -847,7 +1038,7 @@ class PostgresStore:
     # ── logs ─────────────────────────────────────────────────
 
     def _add_log(self, module: str, actor: str, action: str, result: LogResult = "成功") -> None:
-        lid = f"l{self._next_id('l', OperationLogORM)}"
+        lid = f"l-{uuid4().hex}"
         self.db.add(OperationLogORM(id=lid, module=module, actor=actor,
                                     action=action, result=result, time=now_iso()))
 
@@ -955,7 +1146,8 @@ class PostgresStore:
         result: dict[str, list[ExtractedField]] = {}
         for r in rows:
             result.setdefault(r.file_id, []).append(
-                ExtractedField(id=r.id, name=r.name, value=r.value, confidence=r.confidence)
+                ExtractedField(id=r.id, name=r.name, value=r.value, confidence=r.confidence,
+                               section=r.section)
             )
         return result
 
@@ -1008,9 +1200,7 @@ class PostgresStore:
         rf = self.db.get(RawFileORM, file_id)
         if rf:
             self._add_log("原始记录上传", "张工", f"预览文件：{rf.name}")
-            return RawFile(id=rf.id, name=rf.name, type=rf.type, size=rf.size,
-                           uploadedAt=rf.uploaded_at, parseStatus=rf.parse_status,
-                           detectedType=rf.detected_type, typeConfirmed=rf.type_confirmed)
+            return self._raw_file_schema(rf)
         return None
 
     def register_report_preview(self, scope: str, section_id: str | None) -> str:
@@ -1053,9 +1243,7 @@ class PostgresStore:
         rf.type_confirmed = True
         self._add_log("原始记录上传", "张工", f"确认文件类型：{rf.name} -> {detected_type}")
         self.db.flush()
-        return RawFile(id=rf.id, name=rf.name, type=rf.type, size=rf.size,
-                       uploadedAt=rf.uploaded_at, parseStatus=rf.parse_status,
-                       detectedType=rf.detected_type, typeConfirmed=rf.type_confirmed)
+        return self._raw_file_schema(rf)
 
     def upsert_field(self, file_id: str, field_id: str | None, payload: Any) -> ExtractedField:
         if field_id:
@@ -1063,9 +1251,11 @@ class PostgresStore:
             if ef:
                 ef.value = payload.value
                 ef.confidence = 100
+                self.reset_file_approval(file_id)
                 self._add_log("原始记录上传", "张工", f"人工修正字段：{ef.name}")
                 self.db.flush()
-                return ExtractedField(id=ef.id, name=ef.name, value=ef.value, confidence=ef.confidence)
+                return ExtractedField(id=ef.id, name=ef.name, value=ef.value,
+                                      confidence=ef.confidence, section=ef.section)
         nid = self._next_id("manual-", ExtractedFieldORM)
         fid = f"{file_id}-manual-{nid}"
         ef = ExtractedFieldORM(id=fid, file_id=file_id, name=payload.name,
@@ -1074,7 +1264,8 @@ class PostgresStore:
         self.update_file_status(file_id, "解析成功")
         self._add_log("原始记录上传", "张工", f"人工补录字段：{payload.name}")
         self.db.flush()
-        return ExtractedField(id=ef.id, name=ef.name, value=ef.value, confidence=ef.confidence)
+        return ExtractedField(id=ef.id, name=ef.name, value=ef.value, confidence=ef.confidence,
+                              section=ef.section)
 
     def upload_report_revision(self, section_id: str, file_name: str) -> ReportVersion | None:
         sec = self.db.get(ReportSectionORM, section_id)
