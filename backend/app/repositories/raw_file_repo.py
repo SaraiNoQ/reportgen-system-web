@@ -15,6 +15,7 @@ class RawFileRepo(BaseRepository[RawFile]):
     def to_schema(self, obj: RawFileORM) -> RawFile:
         return RawFile(
             id=obj.id,
+            projectId=obj.project_id,
             name=obj.name,
             type=obj.type,
             size=obj.size,
@@ -22,11 +23,18 @@ class RawFileRepo(BaseRepository[RawFile]):
             parseStatus=obj.parse_status,
             detectedType=obj.detected_type,
             typeConfirmed=obj.type_confirmed,
+            serverPath=obj.file_path,
+            parseJobId=obj.parse_job_id,
+            parseRunId=obj.parse_run_id,
+            parseRunPath=obj.parse_run_path,
+            fieldsApproved=bool(obj.fields_approved),
+            approvedAt=obj.approved_at,
         )
 
     def create(self, schema: RawFile) -> RawFile:
         orm = RawFileORM(
             id=schema.id,
+            project_id=schema.projectId,
             name=schema.name,
             type=schema.type,
             size=schema.size,
@@ -34,6 +42,12 @@ class RawFileRepo(BaseRepository[RawFile]):
             parse_status=schema.parseStatus,
             detected_type=schema.detectedType,
             type_confirmed=schema.typeConfirmed,
+            file_path=schema.serverPath,
+            parse_job_id=schema.parseJobId,
+            parse_run_id=schema.parseRunId,
+            parse_run_path=schema.parseRunPath,
+            fields_approved=schema.fieldsApproved,
+            approved_at=schema.approvedAt,
         )
         self.session.add(orm)
         self.session.commit()
@@ -45,12 +59,19 @@ class RawFileRepo(BaseRepository[RawFile]):
         if orm is None:
             return None
         orm.name = schema.name
+        orm.project_id = schema.projectId
         orm.type = schema.type
         orm.size = schema.size
         orm.uploaded_at = schema.uploadedAt
         orm.parse_status = schema.parseStatus
         orm.detected_type = schema.detectedType
         orm.type_confirmed = schema.typeConfirmed
+        orm.file_path = schema.serverPath
+        orm.parse_job_id = schema.parseJobId
+        orm.parse_run_id = schema.parseRunId
+        orm.parse_run_path = schema.parseRunPath
+        orm.fields_approved = schema.fieldsApproved
+        orm.approved_at = schema.approvedAt
         self.session.commit()
         self.session.refresh(orm)
         return self.to_schema(orm)
@@ -72,6 +93,12 @@ class RawFileRepo(BaseRepository[RawFile]):
             stmt = stmt.where(ExtractedFieldORM.file_id == file_id)
         results = self.session.execute(stmt).scalars().all()
         return [
-            ExtractedField(id=r.id, name=r.name, value=r.value, confidence=r.confidence)
+            ExtractedField(
+                id=r.id,
+                name=r.name,
+                value=r.value,
+                confidence=r.confidence,
+                section=r.section,
+            )
             for r in results
         ]

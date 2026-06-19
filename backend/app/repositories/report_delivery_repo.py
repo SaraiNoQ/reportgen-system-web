@@ -15,6 +15,7 @@ class ReportDeliveryRepo(BaseRepository[ReportDelivery]):
             kind=obj.kind,
             scope=obj.scope,
             fileName=obj.file_name,
+            filePath=obj.file_path,
             format=obj.format,
             status=obj.status,
             sectionId=obj.section_id,
@@ -27,6 +28,7 @@ class ReportDeliveryRepo(BaseRepository[ReportDelivery]):
             kind=schema.kind,
             scope=schema.scope,
             file_name=schema.fileName,
+            file_path=schema.filePath,
             format=schema.format,
             status=schema.status,
             section_id=schema.sectionId,
@@ -43,6 +45,7 @@ class ReportDeliveryRepo(BaseRepository[ReportDelivery]):
         orm.kind = schema.kind
         orm.scope = schema.scope
         orm.file_name = schema.fileName
+        orm.file_path = schema.filePath
         orm.format = schema.format
         orm.status = schema.status
         orm.section_id = schema.sectionId

@@ -67,6 +67,7 @@ class RestoreProjectResponse(BaseModel):
 
 class RawFile(BaseModel):
     id: str
+    projectId: str | None = None
     name: str
     type: str
     size: str
@@ -74,6 +75,12 @@ class RawFile(BaseModel):
     parseStatus: ParseStatus
     detectedType: DetectedType
     typeConfirmed: bool
+    serverPath: str | None = None
+    parseJobId: str | None = None
+    parseRunId: str | None = None
+    parseRunPath: str | None = None
+    fieldsApproved: bool = False
+    approvedAt: str | None = None
 
 
 class ParseEvent(BaseModel):
@@ -87,6 +94,7 @@ class ExtractedField(BaseModel):
     name: str
     value: str
     confidence: int = Field(ge=0, le=100)
+    section: str | None = None
 
 
 class RuleField(BaseModel):
@@ -175,6 +183,7 @@ class ReportDelivery(BaseModel):
     format: Literal["pdf", "word", "docx"]
     status: Literal["ready"]
     sectionId: str | None = None
+    filePath: str | None = None
     createdAt: str
 
 
@@ -297,6 +306,7 @@ class UploadItem(BaseModel):
 
 
 class UploadRequest(BaseModel):
+    projectId: str | None = None
     files: list[UploadItem]
 
 
@@ -396,12 +406,21 @@ class DraftResponse(BaseModel):
 class ExportRequest(BaseModel):
     scope: str
     format: Literal["word", "pdf"]
+    filePath: str | None = None
 
 
 class ExportResponse(BaseModel):
     fileName: str
     status: Literal["ready"]
     delivery: ReportDelivery | None = None
+
+
+class ExportStatusResponse(BaseModel):
+    format: Literal["word", "pdf"]
+    exists: bool
+    fileName: str
+    filePath: str | None = None
+    deliveryRecorded: bool = False
 
 
 class ReportPreviewRequest(BaseModel):
