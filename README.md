@@ -46,20 +46,29 @@
 │                     Core API                          │
 │              FastAPI · Pydantic · uv                   │
 │        backend/app/api/v1/  (routes)                  │
-│        backend/app/services/mock_store.py             │
+│        backend/app/services/  (business logic)         │
+│        backend/app/services/manifest_builder.py        │
+└──────────────────────┬───────────────────────────────┘
+                       │  orchestrates
+                       ▼
+┌──────────────────────────────────────────────────────┐
+│               Gen-Report Workflow                     │
+│      validate → prepare → extract → generate          │
+│        backend/app/services/gen_report_service.py     │
 └──────────────────────┬───────────────────────────────┘
                        │  read / write
                        ▼
 ┌──────────────────────────────────────────────────────┐
-│                  Data Layer (dev)                     │
-│                  data/*.json                          │
+│                  Data Layer                           │
+│        data/*.json (dev)  ·  PostgreSQL (Alembic)     │
 │   projects · users · rules · reports · logs · ...    │
 └──────────────────────────────────────────────────────┘
 ```
 
 - **Frontend** talks only through `src/lib/services/api.ts` — never touches data directly.
-- **Backend** serves REST endpoints, persists to local JSON in development; designed to swap in PostgreSQL + MinIO + Celery when ready.
-- **Data** is a set of flat JSON tables under `data/` — the dev-era database; pytest uses a temp directory so tests never pollute real data.
+- **Backend** serves REST endpoints and orchestrates the gen-report workflow (manifest building, field extraction, report generation). Data persists to local JSON in mock mode or PostgreSQL via `postgres_store.py`; `STORAGE_BACKEND` env var selects the backend.
+- **Gen-Report Workflow** drives the four-stage pipeline (validate → prepare → extract → generate) with run-level state, workspace directories, and approval flow.
+- **Data** is a set of flat JSON tables under `data/` for mock mode, or PostgreSQL tables managed by Alembic migrations for production. pytest uses a temp directory so tests never pollute real data.
 
 ---
 
@@ -82,21 +91,29 @@
 │
 ├── backend/                    FastAPI Core API
 │   ├── app/
-│   │   ├── api/v1/             Route modules (auth, projects, records, ...)
+│   │   ├── api/v1/             Route modules (auth, projects, records, gen-report, ...)
 │   │   ├── core/               Config, security, settings
+│   │   ├── models/             SQLAlchemy models
+│   │   ├── repositories/       Data access layer
 │   │   ├── schemas/            Pydantic request / response models
-│   │   ├── services/           Business logic & mock JSON store
-│   │   ├── models/             SQLAlchemy models (for future DB)
+│   │   ├── services/           Business logic, mock_store, postgres_store, gen_report_service, manifest_builder
 │   │   └── tasks/              Celery task stubs
+│   ├── alembic/                Database migrations (file_path, section, parse_run metadata)
+│   ├── tests/                  API and service tests
 │   └── docs/                   Backend specs, API docs, dev guide
 │
-├── data/                       Dev JSON data tables
+├── data/                       Dev JSON data tables (mock mode)
 │   ├── projects.json           Active projects
 │   ├── users.json              System users
 │   ├── reports.json            Generated reports & versions
 │   ├── rules.json              Rule templates & configs
-│   └── ...                     Messages, logs, preferences, etc.
+│   └── ...                     Messages, logs, preferences, fields, deliveries, ...
 │
+├── docs/                       Project-level design & integration docs
+│   ├── gen-report-api-integration.md   Gen-report API architecture & endpoint catalog
+│   └── superpowers/plans/              Implementation plans
+│
+├── dev.sh                      One-command full-stack dev launcher (deps + PG + migrate + seed + serve)
 ├── AGENTS.md                   Agent collaboration guide
 ├── .gitignore
 └── README.md
@@ -110,6 +127,24 @@
 
 - **Node.js** ≥ 18 &nbsp;|&nbsp; **pnpm** ≥ 9
 - **Python** ≥ 3.11 &nbsp;|&nbsp; **uv** (Python package manager)
+- **PostgreSQL** ≥ 14 (optional — mock JSON mode works without it)
+
+### Option A: One-command startup (Recommended) / 一键启动（推荐）
+
+```bash
+./dev.sh
+```
+
+`dev.sh` handles everything: installs deps (if missing), ensures PostgreSQL is running (when `STORAGE_BACKEND=postgres`), runs Alembic migrations, seeds the database if empty, and starts both backend and frontend with graceful cleanup on `Ctrl+C`.
+
+Options:
+```bash
+./dev.sh --install     # install deps before starting
+./dev.sh --no-migrate  # skip Alembic migrations
+./dev.sh --no-seed     # skip database seed check
+```
+
+### Option B: Manual startup / 手动分步启动
 
 ### 1. Backend / 后端
 
@@ -117,8 +152,11 @@
 cd backend
 uv sync                           # install dependencies
 cp .env.example .env              # configure environment
+uv run alembic upgrade head       # apply migrations (STORAGE_BACKEND=postgres)
 uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
+
+> When `STORAGE_BACKEND=mock` (default), the backend uses `data/*.json` and skips PostgreSQL.
 
 Verify / 验证:
 
@@ -184,6 +222,7 @@ See [`frontend/DESIGN.md`](frontend/DESIGN.md) for the full token reference.
 | `api/v1/records/*` | Raw files, parse events, extracted fields |
 | `api/v1/rules/*` | Rule templates, field mapping, versioning |
 | `api/v1/reports/*` | Report sections, generation, preview, delivery |
+| `api/v1/gen-report/*` | Gen-report workflow: manifest, runs, approval, field setting, generation |
 | `api/v1/system/*` | User management, operation logs |
 | `api/v1/messages/*` | In-app user messages |
 
@@ -196,6 +235,7 @@ Full request/response schemas: [`backend/docs/Core API 接口说明.md`](backend
 | Document / 文档 | Scope / 范围 |
 |:---|:---|
 | [`AGENTS.md`](AGENTS.md) | Full project agent collaboration guide — 项目协作说明 |
+| [`docs/gen-report-api-integration.md`](docs/gen-report-api-integration.md) | Gen-report API architecture, 14-endpoint catalog, manifest pipeline — gen-report 集成设计 |
 | [`frontend/docs/需求规格说明书.md`](frontend/docs/需求规格说明书.md) | System requirements spec — 系统需求规格 |
 | [`frontend/docs/前端需求说明.md`](frontend/docs/前端需求说明.md) | Frontend scope & modules — 前端需求范围 |
 | [`frontend/docs/前端开发规范SPEC.md`](frontend/docs/前端开发规范SPEC.md) | Frontend coding conventions — 前端开发规范 |
@@ -203,6 +243,7 @@ Full request/response schemas: [`backend/docs/Core API 接口说明.md`](backend
 | [`backend/README.md`](backend/README.md) | Backend startup & directory guide — 后端启动和目录说明 |
 | [`backend/docs/后端需求说明.md`](backend/docs/后端需求说明.md) | Backend requirements — 后端需求说明 |
 | [`backend/docs/后端开发规范.md`](backend/docs/后端开发规范.md) | Backend coding conventions — 后端开发规范 |
+| [`backend/docs/Core API 接口说明.md`](backend/docs/Core%20API%20接口说明.md) | Core API endpoint reference (incl. gen-report) — 接口说明 |
 
 ---
 
@@ -211,7 +252,9 @@ Full request/response schemas: [`backend/docs/Core API 接口说明.md`](backend
 - [x] Frontend workbench with 9 pages
 - [x] FastAPI Core API with JSON data layer
 - [x] Monorepo history consolidation
-- [ ] PostgreSQL + Alembic migration
+- [x] PostgreSQL + Alembic migration (dual mock/postgres store)
+- [x] Gen-report workflow API (manifest, runs, approval, generation)
+- [x] Records page deep gen-report integration (4-stage progress, section-grouped fields, all-fields modal)
 - [ ] Celery task workers (OCR / LLM extraction)
 - [ ] MinIO object storage for raw files
 - [ ] Real Word / PDF report export

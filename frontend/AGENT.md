@@ -7,7 +7,7 @@
 ## 开发原则
 
 - 需求优先级：`docs/需求规格说明书.md` 高于 Figma 初版原型；视觉风格以 `DESIGN.md` 为基础，但可根据业务工作台密度要求调整圆角、间距和组件尺寸。
-- 当前已接入本地 Core API，后端使用根目录 `data/` 下的 JSON 表持久化项目、文件、字段、规则、报告、用户、用户偏好、消息和日志数据；大模型解析、真实 Word 导出和完整鉴权仍先不实现。
+- 当前已接入本地 Core API，后端支持 mock JSON 和 PostgreSQL 双数据层（通过 `STORAGE_BACKEND` 切换）；前端已集成 gen-report 工作流（records 页面 4 阶段进度条 + section 分组字段，reports 页面报告生成/审批/交付）；大模型解析、真实 Word 导出和完整鉴权仍先不实现。
 - 页面结构保持工具型后台风格，桌面端优先，复杂表格允许横向滚动。
 - 代码变更应优先复用 `src/components/ui`、`src/components/layout` 和 `src/lib/services/api.ts` 的既有模式。
 
@@ -15,9 +15,9 @@
 
 - `/login`：登录入口。
 - `/forgot-password`：账号协助申请。
-- `/records`：原始记录上传与解析，登录后默认进入。
+- `/records`：原始记录上传与解析，登录后默认进入。已集成 gen-report 工作流：4 阶段进度条（validate → prepare → extract → generate）、section 分组字段预览、全部字段 modal。
 - `/rules`：规则配置与模板管理。
-- `/reports`：报告生成与编辑。
+- `/reports`：报告生成与编辑。已集成 gen-report 工作流：报告生成、审批、字段设置和交付管理。
 - `/projects`：项目管理，位于左侧“管理”折叠菜单。
 - `/system/users`：用户管理，位于左侧“管理”折叠菜单。
 - `/system/logs`：日志管理，位于左侧“管理”折叠菜单。

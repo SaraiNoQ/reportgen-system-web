@@ -6,23 +6,34 @@
 
 当前实现重点：
 
-- `frontend/`：Next.js 前端工作台，已通过 `src/lib/services/api.ts` 接入 Core API；`src/lib/mock/data.ts` 仅作为后端不可用时的少量只读 fallback 和演示种子。
-- `backend/`：FastAPI Core API 后端，提供登录、用户、项目、规则、报告、日志等业务接口；当前以根目录 `data/` 下的 JSON 表作为轻量数据层，后续接入数据库、对象存储、任务队列和 AI Worker。
-- `data/`：开发期本地数据表，保存项目、项目软删除记录、文件、字段、规则模板、报告章节、报告版本、交付记录、用户、用户偏好、消息和日志等 JSON 数据。
+- `frontend/`：Next.js 前端工作台，已通过 `src/lib/services/api.ts` 接入 Core API（含 gen-report 工作流端点）；`src/lib/mock/data.ts` 仅作为后端不可用时的少量只读 fallback 和演示种子。
+- `backend/`：FastAPI Core API 后端，提供登录、用户、项目、规则、报告、日志等业务接口和 gen-report 工作流（manifest 构建、字段提取、报告生成）；支持 mock JSON 和 PostgreSQL 双数据层（通过 `STORAGE_BACKEND` 环境变量切换），Alembic 迁移已就位。
+- `data/`：开发期本地数据表（mock 模式），保存项目、项目软删除记录、文件、字段、规则模板、报告章节、报告版本、交付记录、用户、用户偏好、消息和日志等 JSON 数据。
+- `docs/`：项目级设计文档，包含 gen-report API 集成设计和实现计划。
 
-前端不直接调用文档解析或大模型能力。后续真实链路应由前端调用 Core API，Core API 再编排解析任务和 AI Worker。
+前端通过 Core API adapter 调用 gen-report 工作流端点，Core API 编排 manifest 构建、工作流执行和结果聚合。后续真实链路中 OCR、文档解析和大模型推理由独立 AI Worker 执行，Core API 负责任务编排。
 
 ## 目录结构
 
 ```text
 backend/
-  app/                  FastAPI 应用代码
+  app/
+    api/v1/             路由模块（auth, projects, records, gen-report, reports, ...）
+    services/           业务服务（mock_store, postgres_store, gen_report_service, manifest_builder）
+    models/             SQLAlchemy 模型
+    repositories/       数据访问层
+    schemas/            Pydantic 入参和出参
+  alembic/              数据库迁移（file_path, section, parse_run metadata）
   docs/                 后端需求、规范、接口和流程文档
   tests/                后端测试
   README.md             后端启动和目录说明
 
 data/
-  *.json                开发期本地数据表，由后端启动和写操作维护
+  *.json                开发期本地数据表（mock 模式），由后端启动和写操作维护
+
+docs/
+  gen-report-api-integration.md   gen-report API 集成设计文档
+  superpowers/plans/              实现计划
 
 frontend/
   src/app/              Next.js App Router 页面
@@ -31,11 +42,13 @@ frontend/
   src/components/pages/ 页面级客户端交互组件
   src/lib/types/        前端领域类型
   src/lib/mock/         前端 fallback 与演示种子数据
-  src/lib/services/     Core API adapter
+  src/lib/services/     Core API adapter（含 genReportApi）
   docs/                 前端需求、规范、技术栈、流程和需求规格文档
   AGENT.md              前端协作说明
   CLAUDE.md             前端协作说明副本
   DESIGN.md             视觉风格参考
+
+dev.sh                  一键启动前后端（含 PostgreSQL、迁移、种子）
 ```
 
 ## 前端文档与规范入口
@@ -58,9 +71,9 @@ frontend/
 
 - `/login`：系统登录。
 - `/forgot-password`：账号协助申请。
-- `/records`：原始记录上传与解析，登录后默认进入。
+- `/records`：原始记录上传与解析，登录后默认进入。已集成 gen-report 工作流：4 阶段进度条（validate → prepare → extract → generate）、section 分组字段预览、全部字段 modal、工作流控制按钮。
 - `/rules`：规则配置与模板管理。
-- `/reports`：报告生成与编辑。
+- `/reports`：报告生成与编辑。已集成 gen-report 工作流：报告生成、审批、字段设置和交付管理。
 - `/projects`：项目管理，位于左侧“管理”折叠菜单。
 - `/system/users`：用户管理，位于左侧“管理”折叠菜单。
 - `/system/logs`：日志管理，位于左侧“管理”折叠菜单。
@@ -82,13 +95,20 @@ frontend/
 后端开发前阅读：
 
 - `backend/README.md`：本地启动和后端目录说明。
-- `backend/docs/后端需求说明.md`：Core API、AI Worker、模块和接口边界。
+- `backend/docs/后端需求说明.md`：Core API、AI Worker、模块和接口边界（含 gen-report 工作流模块）。
 - `backend/docs/后端开发规范.md`：分层、命名、接口、数据库、权限、日志、AI 边界和测试规范。
-- `backend/docs/Core API 接口说明.md`：当前前后端联调用 API。
-- `backend/docs/技术栈说明.md`：FastAPI、Pydantic、SQLAlchemy、Celery、Redis、MinIO/S3 等技术选择。
+- `backend/docs/Core API 接口说明.md`：当前前后端联调用 API（含 gen-report 14 个端点）。
+- `backend/docs/技术栈说明.md`：FastAPI、Pydantic、SQLAlchemy、Alembic、Celery、Redis、MinIO/S3 等技术选择。
 - `backend/docs/开发流程.md`：接口设计、数据建模、实现顺序和验证流程。
+- `docs/gen-report-api-integration.md`：gen-report 工作流 API 集成设计文档（架构、14 端点清单、manifest 管线）。
 
 ## 常用命令
+
+一键启动（推荐）：
+
+```bash
+./dev.sh
+```
 
 前端：
 
@@ -106,6 +126,7 @@ pnpm build
 ```bash
 cd backend
 uv sync
+uv run alembic upgrade head  # STORAGE_BACKEND=postgres 时
 uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 uv run ruff check .
 uv run pytest
@@ -146,6 +167,8 @@ uv run pytest
 
 ## 数据层约定
 
-- 当前不要直接引入真实数据库；后端通过 `backend/app/services/mock_store.py` 读写根目录 `data/*.json`。
-- 新增业务集合时，应同步增加 schema、store 读写、API 路由、接口文档和必要的前端 adapter。
+- 后端支持 mock JSON 和 PostgreSQL 双数据层，通过 `STORAGE_BACKEND` 环境变量切换（`mock` 或 `postgres`）。
+- mock 模式通过 `backend/app/services/mock_store.py` 读写根目录 `data/*.json`；postgres 模式通过 `backend/app/services/postgres_store.py` 和 `repositories/` 访问数据库。
+- 数据库 schema 变更通过 `backend/alembic/` 下的 Alembic 迁移管理；新增字段时必须同时更新 model、迁移、mock_store、postgres_store 和 schema。
+- 新增业务集合时，应同步增加 schema、store 读写（mock + postgres）、API 路由、接口文档和必要的前端 adapter。
 - pytest 使用临时 `INSPECTION_DATA_DIR`，不会污染根目录 `data/`；手动启动后端时默认读写根目录 `data/`。

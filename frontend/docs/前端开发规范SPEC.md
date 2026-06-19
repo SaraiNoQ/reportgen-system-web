@@ -41,9 +41,10 @@
 
 ## 数据与接口规范
 
-- 类型定义放在 `src/lib/types/domain.ts`。
+- 类型定义放在 `src/lib/types/domain.ts`，包含 `WorkflowJob`、`WorkflowProgress` 等 gen-report 工作流类型。
 - mock 数据放在 `src/lib/mock/data.ts`，仅作为 fallback 和演示种子，不作为页面写操作的数据源。
 - 页面只调用 `src/lib/services/api.ts` 暴露的 adapter，不直接读取 mock 数据。
+- gen-report 工作流相关调用通过 `genReportApi` 命名空间下的 adapter 方法（如 `approveRun`、`generateRun`）。
 - 后续接入真实数据库、对象存储和 AI Worker 时，保持 adapter 函数签名稳定，替换 Core API 内部实现。
 
 ## 交互规范
