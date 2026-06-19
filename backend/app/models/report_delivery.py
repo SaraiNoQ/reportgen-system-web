@@ -16,6 +16,7 @@ class ReportDelivery(Base):
     kind: Mapped[str]
     scope: Mapped[str]
     file_name: Mapped[str]
+    file_path: Mapped[str | None] = mapped_column(nullable=True)
     format: Mapped[str]
     status: Mapped[str]
     section_id: Mapped[str | None] = mapped_column(

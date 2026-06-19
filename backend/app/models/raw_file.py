@@ -20,6 +20,12 @@ class RawFile(Base):
     parse_status: Mapped[str]
     detected_type: Mapped[str]
     type_confirmed: Mapped[bool] = mapped_column(default=False)
+    file_path: Mapped[str | None] = mapped_column(nullable=True)
+    parse_job_id: Mapped[str | None] = mapped_column(nullable=True)
+    parse_run_id: Mapped[str | None] = mapped_column(nullable=True)
+    parse_run_path: Mapped[str | None] = mapped_column(nullable=True)
+    fields_approved: Mapped[bool] = mapped_column(default=False)
+    approved_at: Mapped[str | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         server_default=func.now(), onupdate=func.now()
