@@ -1,10 +1,10 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  AlertTriangle,
   Check,
-  ChevronLeft,
-  ChevronRight,
+  CheckCircle2,
   Download,
   Eye,
   FileDown,
@@ -13,6 +13,7 @@ import {
   GripVertical,
   Lightbulb,
   Loader2,
+  Maximize2,
   Plus,
   Save,
   Search,
@@ -23,12 +24,12 @@ import {
   X
 } from "lucide-react";
 import { useAppContext } from "@/components/providers/app-provider";
-import { Badge } from "@/components/ui/badge";
+import { Badge, StatusDot } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, SectionHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/forms";
-import { reportApi } from "@/lib/services/api";
-import type { ReportSection } from "@/lib/types/domain";
+import { genReportApi, recordApi, reportApi } from "@/lib/services/api";
+import type { ExtractedField, ParseEvent, ReportSection, RunStatus, WorkflowJob, WorkflowProgress, WorkflowRunSummary } from "@/lib/types/domain";
 import { cn } from "@/lib/utils";
 
 const AI_SUGGESTIONS = [
@@ -61,7 +62,6 @@ const REPORT_CATEGORIES = [
   { id: "attachment", name: "附件", template: "报告附件归档模板", code: "CAT-ATTACHMENT", scope: "原始记录、照片、解析日志、签章页" },
   { id: "custom", name: "自定义章节", template: "通用人工补充章节模板", code: "CAT-CUSTOM", scope: "人工补充说明、特殊检测项" }
 ];
-
 function getDefaultCategoryId(title: string) {
   if (title.includes("封面")) return "cover";
   if (title.includes("结论")) return "conclusion";
@@ -95,6 +95,8 @@ type ReportBusyAction =
   | "suggestion"
   | "delete-section"
   | "reorder";
+
+type GeneratedPdfStatus = "idle" | "checking" | "converting" | "ready" | "failed";
 
 type DropMarker = {
   targetId: string;
@@ -139,6 +141,68 @@ function setFloatingDragImage(dataTransfer: DataTransfer, source: HTMLElement, c
   window.setTimeout(() => preview.remove(), 0);
 }
 
+function workflowTone(status?: WorkflowJob["status"]) {
+  if (status === "succeeded") return "success";
+  if (status === "failed") return "danger";
+  if (status === "running" || status === "queued") return "warning";
+  return "neutral";
+}
+
+function workflowLabel(status?: WorkflowJob["status"]) {
+  if (status === "queued") return "排队中";
+  if (status === "running") return "生成中";
+  if (status === "succeeded") return "已完成";
+  if (status === "failed") return "失败";
+  return "未开始";
+}
+
+function runStatusTone(status?: string) {
+  if (status === "已完成" || status === "generated") return "success";
+  if (status === "failed" || status === "错误") return "danger";
+  if (status === "待审核" || status === "running") return "warning";
+  return "neutral";
+}
+
+function getWorkflowRuns(job: WorkflowJob | null): WorkflowRunSummary[] {
+  return job?.result?.runs ?? [];
+}
+
+function firstRunId(job: WorkflowJob | null) {
+  const runFromResult = getWorkflowRuns(job)[0]?.run_id;
+  if (runFromResult) return runFromResult;
+  return Object.keys(job?.runPaths ?? {})[0] ?? "";
+}
+
+function getFinalReportPath(runStatus: RunStatus | null) {
+  const value = runStatus?.outputs.finalReport ?? runStatus?.outputs.final_report;
+  return typeof value === "string" ? value : "";
+}
+
+function formatWorkflowEventTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "--:--:--";
+  return date.toLocaleTimeString("zh-CN", { hour12: false });
+}
+
+function buildGenerateJob(runId: string, status: WorkflowJob["status"], message: string, events: Array<{ at: string; message: string }>): WorkflowJob {
+  return {
+    jobId: `generate-${runId}`,
+    status,
+    message,
+    runPaths: { [runId]: "" },
+    result: {
+      status: status === "failed" ? "error" : status === "succeeded" ? "ok" : "running",
+      message,
+      runs: [{ run_id: runId, status: status === "succeeded" ? "generated" : status, message }],
+      generated_count: status === "succeeded" ? 1 : 0,
+      failed_count: status === "failed" ? 1 : 0,
+      review_required_count: 0,
+    },
+    error: status === "failed" ? message : null,
+    progressEvents: events,
+  };
+}
+
 export function ReportsClient({ sections: initialSections }: { sections: ReportSection[] }) {
   const { currentProject } = useAppContext();
   const currentProjectName = currentProject?.name ?? "当前项目";
@@ -150,6 +214,7 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
   const [generating, setGenerating] = useState(false);
   const [pdfPreviewOpen, setPdfPreviewOpen] = useState(false);
   const [generatedDialogOpen, setGeneratedDialogOpen] = useState(false);
+  const [workflowLogOpen, setWorkflowLogOpen] = useState(false);
   const [previewScope, setPreviewScope] = useState<"report" | "section">("section");
   const [categoryPickerOpen, setCategoryPickerOpen] = useState(false);
   const [categorySearch, setCategorySearch] = useState("");
@@ -165,18 +230,29 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
   const [sectionCategories, setSectionCategories] = useState<Record<string, string>>(
     Object.fromEntries(initialSections.map((section) => [section.id, getDefaultCategoryId(section.title)]))
   );
-  const [zoom, setZoom] = useState(92);
-  const [page, setPage] = useState(1);
+  const [pdfStatus, setPdfStatus] = useState<GeneratedPdfStatus>("idle");
+  const [pdfBlobUrl, setPdfBlobUrl] = useState("");
+  const [pdfFileName, setPdfFileName] = useState("");
+  const [pdfFilePath, setPdfFilePath] = useState("");
+  const [pdfError, setPdfError] = useState("");
   const [uploadedRevisions, setUploadedRevisions] = useState<Record<string, string>>({});
   const [draggingSectionId, setDraggingSectionId] = useState<string | null>(null);
   const [sectionDropMarker, setSectionDropMarker] = useState<DropMarker | null>(null);
   const [busyAction, setBusyAction] = useState<ReportBusyAction | null>(null);
+  const [workflowJob, setWorkflowJob] = useState<WorkflowJob | null>(null);
+  const [activeRunId, setActiveRunId] = useState("");
+  const [runStatus, setRunStatus] = useState<RunStatus | null>(null);
+  const [runFields, setRunFields] = useState<ExtractedField[]>([]);
+  const [workflowError, setWorkflowError] = useState("");
+  const [handledJobId, setHandledJobId] = useState("");
   const sectionListRef = useRef<HTMLDivElement | null>(null);
   const revisionInputRef = useRef<HTMLInputElement>(null);
   const generationLockRef = useRef(false);
+  const pdfBlobUrlRef = useRef("");
+  const pdfSourcePathRef = useRef("");
+  const pdfPreparingPathRef = useRef("");
   const active = sections.find((s) => s.id === activeId) ?? sections[0];
   const activeCategory = categoryById(active ? sectionCategories[active.id] ?? getDefaultCategoryId(active.title) : "custom");
-  const reportContent = sections.map((section) => `${section.title}\n${content[section.id] || section.content}`).join("\n\n");
   const filteredCategories = REPORT_CATEGORIES.filter((category) => {
     const keyword = categorySearch.trim().toLowerCase();
     if (!keyword) return true;
@@ -184,31 +260,333 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
   });
   const activeDocName = `${active?.title ?? "检测报告"}_${activeCategory.name}.docx`;
   const interfaceBusy = generating || busyAction !== null;
+  const finalReportPath = getFinalReportPath(runStatus);
+  const reportBodyVisible = pdfStatus === "ready" && Boolean(pdfBlobUrl);
+  const workflowLogEvents = useMemo(() => workflowJob?.progressEvents ?? [], [workflowJob?.progressEvents]);
+  const workflowDisplayStatus: WorkflowJob["status"] | undefined = finalReportPath
+    ? "succeeded"
+    : workflowJob?.status;
+  const reportWorkflowEvents = useMemo((): ParseEvent[] => {
+    return workflowLogEvents.map((event, index) => ({
+      time: formatWorkflowEventTime(event.at),
+      label: event.message,
+      state:
+        workflowDisplayStatus === "failed" && index === workflowLogEvents.length - 1
+          ? "active"
+          : workflowDisplayStatus === "running" && index === workflowLogEvents.length - 1
+            ? "active"
+            : "done"
+    }));
+  }, [workflowDisplayStatus, workflowLogEvents]);
+  const reportWorkflowStages = useMemo((): WorkflowProgress[] => {
+    const text = workflowLogEvents.map((event) => event.message.toLowerCase()).join("\n");
+    const isDone = workflowDisplayStatus === "succeeded";
+    const isFailed = workflowDisplayStatus === "failed";
+    const hasExtract = text.includes("extract") || text.includes("field") || runFields.length > 0;
+    const hasGenerate = text.includes("generate") || text.includes("final") || Boolean(finalReportPath);
+    const stageState = (done: boolean, active: boolean): WorkflowProgress["status"] => {
+      if (isFailed && active) return "failed";
+      if (done || isDone) return "done";
+      if (active) return "active";
+      return "pending";
+    };
+    const workflowStarted = Boolean(workflowJob);
+    return [
+      { stage: "validate", label: "配置验证", meta: workflowStarted ? "已通过" : "等待中", status: workflowStarted ? "done" : "pending" },
+      { stage: "prepare", label: "工作区准备", meta: workflowStarted ? "已就绪" : "等待中", status: workflowStarted ? "done" : "pending" },
+      { stage: "extract", label: "字段载入", meta: runFields.length ? `${runFields.length} 个字段` : hasExtract ? "载入中" : "等待中", status: stageState(runFields.length > 0 || hasExtract, workflowStarted && !hasGenerate) },
+      { stage: "generate", label: "报告生成", meta: finalReportPath ? "已生成 Word" : hasGenerate ? "生成中" : "等待中", status: stageState(Boolean(finalReportPath), workflowStarted && hasGenerate) }
+    ];
+  }, [finalReportPath, runFields.length, workflowDisplayStatus, workflowJob, workflowLogEvents]);
+  const activeReportProgress = finalReportPath ? 100 : workflowDisplayStatus === "failed" ? 100 : workflowDisplayStatus === "running" ? 62 : workflowDisplayStatus === "queued" ? 18 : 0;
+  const workflowSummary =
+    pdfStatus === "checking" || pdfStatus === "converting"
+      ? "最终 Word 已生成，正在准备 PDF 预览..."
+      : pdfStatus === "failed"
+        ? `最终 Word 已生成，但 PDF 生成失败：${pdfError || "请稍后重试。"}`
+        : pdfStatus === "ready"
+          ? "最终 Word 和 PDF 预览均已生成。"
+          : workflowError || workflowJob?.message || reportWorkflowEvents.at(-1)?.label || "暂无工作流日志。点击生成报告后会显示实时进度。";
 
-  function showToast(msg: string) {
+  const showToast = useCallback((msg: string) => {
     setToast(msg);
     setTimeout(() => setToast(""), 2500);
+  }, []);
+
+  const replacePdfBlob = useCallback((blob: Blob, fileName: string, filePath?: string | null) => {
+    if (pdfBlobUrlRef.current) {
+      window.URL.revokeObjectURL(pdfBlobUrlRef.current);
+    }
+    const nextUrl = window.URL.createObjectURL(blob);
+    pdfBlobUrlRef.current = nextUrl;
+    setPdfBlobUrl(nextUrl);
+    setPdfFileName(fileName);
+    if (filePath) setPdfFilePath(filePath);
+  }, []);
+
+  const clearPdfPreviewState = useCallback(() => {
+    if (pdfBlobUrlRef.current) {
+      window.URL.revokeObjectURL(pdfBlobUrlRef.current);
+    }
+    pdfBlobUrlRef.current = "";
+    pdfSourcePathRef.current = "";
+    pdfPreparingPathRef.current = "";
+    setPdfBlobUrl("");
+    setPdfFileName("");
+    setPdfFilePath("");
+    setPdfError("");
+    setPdfStatus("idle");
+  }, []);
+
+  const prepareGeneratedPdf = useCallback(async (filePath: string, options: { silent?: boolean } = {}) => {
+    if (!filePath) return false;
+    if (pdfSourcePathRef.current === filePath && pdfBlobUrlRef.current && pdfStatus === "ready") {
+      return true;
+    }
+    if (pdfPreparingPathRef.current === filePath) {
+      return false;
+    }
+    pdfPreparingPathRef.current = filePath;
+    if (pdfSourcePathRef.current && pdfSourcePathRef.current !== filePath && pdfBlobUrlRef.current) {
+      window.URL.revokeObjectURL(pdfBlobUrlRef.current);
+      pdfBlobUrlRef.current = "";
+      setPdfBlobUrl("");
+    }
+    pdfSourcePathRef.current = filePath;
+    setPdfError("");
+    setPdfStatus("checking");
+    try {
+      const status = await reportApi.generatedExportStatus(currentProjectName, "pdf", filePath);
+      setPdfFileName(status.fileName);
+      setPdfFilePath(status.filePath ?? "");
+      setPdfStatus(status.exists ? "checking" : "converting");
+      if (!status.exists && !options.silent) {
+        showToast("正在将最终 Word 转换为 PDF 预览...");
+      }
+      const response = await reportApi.fetchGeneratedReportBlob(currentProjectName, "pdf", filePath);
+      const finalStatus = status.exists
+        ? status
+        : await reportApi.generatedExportStatus(currentProjectName, "pdf", filePath);
+      replacePdfBlob(response.blob, response.fileName, finalStatus.filePath);
+      setPdfStatus("ready");
+      if (!options.silent) showToast("PDF 预览已生成。");
+      return true;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "PDF 转换接口暂不可用。";
+      setPdfError(detail);
+      setPdfStatus("failed");
+      if (pdfBlobUrlRef.current) {
+        window.URL.revokeObjectURL(pdfBlobUrlRef.current);
+      }
+      pdfBlobUrlRef.current = "";
+      setPdfBlobUrl("");
+      if (!options.silent) showToast(`PDF 生成失败：${detail}`);
+      return false;
+    } finally {
+      if (pdfPreparingPathRef.current === filePath) {
+        pdfPreparingPathRef.current = "";
+      }
+    }
+  }, [currentProjectName, pdfStatus, replacePdfBlob, showToast]);
+
+  async function loadRunDetails(runId: string) {
+    const [statusResult, fieldsResult] = await Promise.allSettled([
+      genReportApi.getRunStatus(runId),
+      genReportApi.getRunFields(runId)
+    ]);
+
+    if (statusResult.status === "fulfilled") {
+      setRunStatus((current) => {
+        const currentFinalPath = current?.runId === runId ? getFinalReportPath(current) : "";
+        const nextFinalPath = getFinalReportPath(statusResult.value);
+        if (!nextFinalPath && currentFinalPath) {
+          return {
+            ...statusResult.value,
+            outputs: {
+              ...statusResult.value.outputs,
+              finalReport: currentFinalPath,
+              final_report: currentFinalPath
+            }
+          };
+        }
+        return statusResult.value;
+      });
+    }
+    if (fieldsResult.status === "fulfilled") {
+      setRunFields(fieldsResult.value.fields);
+    }
+    if (statusResult.status === "rejected") {
+      setWorkflowError(statusResult.reason instanceof Error ? statusResult.reason.message : "读取报告产物状态失败");
+    }
   }
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const queryRunId = new URLSearchParams(window.location.search).get("runId") ?? "";
+    if (queryRunId) {
+      setActiveRunId((current) => current || queryRunId);
+      setMessage("已加载原始记录页审核通过的字段结果，可点击生成报告生成最终 Word。");
+      return;
+    }
+    if (!currentProject?.id) return;
+    let cancelled = false;
+    void recordApi.files(currentProject.id).then((files) => {
+      if (cancelled) return;
+      const approvedFile = [...files].reverse().find((file) =>
+        file.parseStatus === "解析成功" &&
+        Boolean(file.fieldsApproved) &&
+        Boolean(file.parseRunId) &&
+        Boolean(file.parseRunPath)
+      );
+      if (!approvedFile?.parseRunId) return;
+      setActiveRunId((current) => current || (approvedFile.parseRunId ?? ""));
+      setMessage("已加载原始记录页审核通过的字段结果，可点击生成报告生成最终 Word。");
+    }).catch((error) => {
+      if (!cancelled) {
+        setWorkflowError(error instanceof Error ? error.message : "读取已审核字段状态失败");
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentProject?.id]);
+
+  useEffect(() => {
+    if (!workflowJob || workflowJob.status === "succeeded" || workflowJob.status === "failed") return;
+    if (workflowJob.jobId.startsWith("generate-")) return;
+    const jobId = workflowJob.jobId;
+    const timer = window.setInterval(async () => {
+      try {
+        const next = await genReportApi.getJob(jobId);
+        setWorkflowJob(next);
+        const nextRunId = firstRunId(next);
+        if (nextRunId) {
+          setActiveRunId((current) => current || nextRunId);
+        }
+      } catch (error) {
+        setWorkflowError(error instanceof Error ? error.message : "报告生成任务状态查询失败");
+      }
+    }, 2000);
+
+    return () => window.clearInterval(timer);
+  }, [workflowJob]);
+
+  useEffect(() => {
+    if (!activeRunId) return;
+    void loadRunDetails(activeRunId);
+  }, [activeRunId]);
+
+  useEffect(() => {
+    return () => {
+      if (pdfBlobUrlRef.current) {
+        window.URL.revokeObjectURL(pdfBlobUrlRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!finalReportPath) {
+      clearPdfPreviewState();
+      return;
+    }
+    void prepareGeneratedPdf(finalReportPath, { silent: true });
+  }, [clearPdfPreviewState, finalReportPath, prepareGeneratedPdf]);
+
+  useEffect(() => {
+    if (!workflowJob || workflowJob.status === "queued" || workflowJob.status === "running") return;
+    if (handledJobId === workflowJob.jobId) return;
+    setHandledJobId(workflowJob.jobId);
+    setGenerating(false);
+    generationLockRef.current = false;
+
+    const runId = firstRunId(workflowJob);
+    if (runId) {
+      setActiveRunId(runId);
+      void loadRunDetails(runId);
+    }
+
+    if (workflowJob.status === "succeeded") {
+      const versionLabel = `V${versions.length + 1}.0 gen-report 生成报告`;
+      setVersions((prev) => [
+        { id: `workflow-${workflowJob.jobId}-${Date.now()}`, label: versionLabel },
+        ...prev
+      ]);
+      setMessage("gen-report 工作流已完成，最终 Word 已生成；可在交付文件区导出最终报告或查看页面预览。");
+      setGeneratedDialogOpen(true);
+      showToast("报告生成工作流已完成。");
+      return;
+    }
+
+    const failure = workflowJob.error || workflowJob.message || "报告生成工作流失败。";
+    setWorkflowError(failure);
+    setMessage(failure);
+    showToast("报告生成失败，请查看工作流状态。");
+  }, [handledJobId, showToast, versions.length, workflowJob]);
 
   async function handleGenerate() {
     if (generationLockRef.current) return;
+    if (!currentProject?.id) {
+      showToast("请先选择项目后再生成报告。");
+      return;
+    }
+    if (finalReportPath) {
+      if (pdfStatus !== "ready") {
+        await prepareGeneratedPdf(finalReportPath);
+      }
+      setGeneratedDialogOpen(true);
+      showToast("最终报告已生成，可直接导出。");
+      return;
+    }
+    if (!activeRunId) {
+      showToast("请先在原始记录页完成字段提取和审核，再进入报告生成。");
+      return;
+    }
     generationLockRef.current = true;
     setGenerating(true);
-    setMessage("正在根据各章节类别、标准模板和解析字段生成 Word，并同步转换 PDF 预览...");
+    setWorkflowError("");
+    setHandledJobId("");
+    clearPdfPreviewState();
+    setRunStatus(null);
+    setMessage("正在基于已审核字段生成最终报告，请等待后端写出 Word 文件...");
+    const startedAt = new Date().toISOString();
+    const startedEvents = [{ at: startedAt, message: `Run ${activeRunId}: generate started` }];
+    setWorkflowJob(buildGenerateJob(activeRunId, "running", "Final report generation started.", startedEvents));
     try {
-      const response = await reportApi.generate(sectionCategories);
-      const newSections = response.sections;
-      setSections(newSections);
-      setContent(Object.fromEntries(newSections.map((s) => [s.id, s.content])));
-      setSectionCategories(Object.fromEntries(newSections.map((section) => [section.id, getDefaultCategoryId(section.title)])));
-      setActiveId(newSections[0].id);
-      setVersions((prev) => [{ id: `generated-${Date.now()}`, label: response.version }, ...prev]);
-      setMessage(response.message);
-      setGeneratedDialogOpen(true);
-      showToast("报告生成完成：已生成 Word 和 PDF 预览。");
-    } catch {
-      setMessage("报告生成接口暂不可用，请确认 Core API 服务状态。");
-      showToast("报告生成失败，请稍后重试。");
+      const response = await genReportApi.generateRun(activeRunId);
+      const completedAt = new Date().toISOString();
+      const isGenerated = response.status === "generated" || response.status === "ok";
+      const finalPath = response.final_report ?? response.finalReport ?? "";
+      setWorkflowJob(buildGenerateJob(
+        activeRunId,
+        isGenerated ? "succeeded" : "failed",
+        response.message || (isGenerated ? "Report generated successfully." : "Report generation failed."),
+        [...startedEvents, { at: completedAt, message: `Run ${activeRunId}: generate ${isGenerated ? "completed" : "failed"}` }],
+      ));
+      if (finalPath) {
+        setRunStatus({
+          runId: activeRunId,
+          status: response.status,
+          businessStatus: "已完成",
+          stage: "generate",
+          message: response.message,
+          artifacts: [],
+          staleArtifacts: [],
+          issues: [],
+          outputs: { finalReport: finalPath, final_report: finalPath },
+        });
+        void prepareGeneratedPdf(finalPath);
+      }
+      void loadRunDetails(activeRunId);
+      showToast(isGenerated ? "最终报告已生成。" : "最终报告生成失败，请查看日志。");
+    } catch (error) {
+      const failure = error instanceof Error ? error.message : "报告生成接口暂不可用，请确认 Core API 服务状态。";
+      setWorkflowError(failure);
+      setMessage(failure);
+      setWorkflowJob(buildGenerateJob(activeRunId, "failed", failure, [
+        ...startedEvents,
+        { at: new Date().toISOString(), message: failure },
+      ]));
+      showToast("报告生成启动失败。");
     } finally {
       setGenerating(false);
       generationLockRef.current = false;
@@ -352,6 +730,21 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
 
   async function handleExportWord(scope = "整份报告") {
     if (busyAction) return;
+    if (scope === "整份报告" && activeRunId && finalReportPath) {
+      setBusyAction("export-word-report");
+      showToast("正在通过后端导出最终 Word...");
+      try {
+        await reportApi.generatedExportStatus(currentProjectName, "word", finalReportPath);
+        const response = await reportApi.downloadGeneratedReport(currentProjectName, "word", finalReportPath);
+        showToast(`Word 已开始下载：${response.fileName}`);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : "导出接口暂不可用。";
+        showToast(`Word 导出失败：${detail}`);
+      } finally {
+        setBusyAction(null);
+      }
+      return;
+    }
     setBusyAction(scope === "整份报告" ? "export-word-report" : "export-word-section");
     showToast(`${scope} Word 正在准备下载...`);
     try {
@@ -366,13 +759,26 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
 
   async function handleExportPdf() {
     if (busyAction) return;
+    if (!finalReportPath) {
+      showToast("请先生成最终 Word 报告后再导出 PDF。");
+      return;
+    }
+    if (pdfStatus !== "ready") {
+      const ready = await prepareGeneratedPdf(finalReportPath);
+      if (!ready) return;
+    }
     setBusyAction("export-pdf");
-    showToast("PDF 正在导出...");
+    showToast("正在检查 PDF 导出状态...");
     try {
-      const response = await reportApi.export(currentProjectName, "pdf");
-      showToast(`导出完成：${response.fileName}`);
-    } catch {
-      showToast(`导出完成：${currentProjectName}_检测报告.pdf`);
+      const status = await reportApi.generatedExportStatus(currentProjectName, "pdf", finalReportPath);
+      if (!status.exists) {
+        showToast("未找到已生成 PDF，正在由后端转换...");
+      }
+      const response = await reportApi.downloadGeneratedReport(currentProjectName, "pdf", finalReportPath);
+      showToast(`PDF 已开始下载：${response.fileName}`);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "PDF 转换接口暂不可用。";
+      showToast(`PDF 导出失败：${detail}`);
     } finally {
       setBusyAction(null);
     }
@@ -413,18 +819,18 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
   }
 
   async function openPdfPreview(scope: "report" | "section") {
-    if (busyAction) return;
-    setPreviewScope(scope);
-    setPage(1);
-    setPdfPreviewOpen(true);
-    setBusyAction(scope === "report" ? "preview-report" : "preview-section");
-    try {
-      await reportApi.preview(scope, scope === "section" ? active?.id : undefined);
-    } catch {
-      showToast("PDF 预览接口暂不可用，已先展示当前页面预览。");
-    } finally {
-      setBusyAction(null);
+    if (busyAction || scope !== "report") return;
+    if (!pdfBlobUrl) {
+      if (finalReportPath) {
+        await prepareGeneratedPdf(finalReportPath);
+      }
+      if (!pdfBlobUrlRef.current) {
+        showToast("PDF 还未生成，请稍后再预览。");
+        return;
+      }
     }
+    setPreviewScope("report");
+    setPdfPreviewOpen(true);
   }
 
   return (
@@ -434,7 +840,7 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
         title="报告生成与预览"
         action={
           <div className="flex flex-wrap gap-3">
-            <Button variant="primary" onClick={handleGenerate} disabled={Boolean(busyAction)} loading={generating} loadingText="生成中">
+            <Button variant="primary" onClick={handleGenerate} disabled={Boolean(busyAction) || !currentProject?.id || !activeRunId} loading={generating} loadingText="生成中">
               <Sparkles className="size-4" />
               生成报告
             </Button>
@@ -442,6 +848,126 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
         }
       />
 
+      <Card className="mb-4">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="serif text-[1.75rem] leading-tight">报告生成进度</h2>
+            <p className="mt-1 text-sm text-warm-stone">实时展示 gen-report 工作流日志和当前生成阶段。</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone={workflowTone(workflowDisplayStatus)}>
+              {workflowLabel(workflowDisplayStatus)}
+            </Badge>
+            {activeRunId ? <Badge tone="neutral">Run {activeRunId}</Badge> : null}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-4 gap-2">
+          {reportWorkflowStages.map((stage, index) => (
+            <div
+              key={stage.stage}
+              className={cn(
+                "rounded-lg border p-2 text-center",
+                stage.status === "active" ? "border-ink-black bg-mint-wash/45" :
+                stage.status === "done" ? "border-ink-black/20 bg-parchment-cream/60" :
+                stage.status === "failed" ? "border-[#8b3228]/30 bg-[#f6d8d2]/35" :
+                "border-ink-black/10 bg-parchment-cream/35"
+              )}
+            >
+              <div className="flex items-center justify-center gap-1.5">
+                {stage.status === "active" ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : stage.status === "done" ? (
+                  <CheckCircle2 className="size-3.5" />
+                ) : stage.status === "failed" ? (
+                  <AlertTriangle className="size-3.5" />
+                ) : (
+                  <span className="grid size-3.5 place-items-center rounded-full border border-ink-black/20 text-[9px]">
+                    {index + 1}
+                  </span>
+                )}
+                <span className="text-xs font-medium">{stage.label}</span>
+              </div>
+              <p className="mt-1 text-[11px] leading-4 text-warm-stone">{stage.meta}</p>
+            </div>
+          ))}
+        </div>
+
+        <div className={cn("mt-3 rounded-md border p-2.5", workflowDisplayStatus === "succeeded" ? "border-ink-black/30 bg-mint-wash/55" : workflowDisplayStatus === "failed" ? "border-[#8b3228]/30 bg-[#f6d8d2]/55" : "border-ink-black/30 bg-parchment-cream/55")}>
+          <div className="flex items-center justify-between gap-2">
+            <span className="flex items-center gap-1.5 text-xs font-medium">
+              {workflowDisplayStatus === "running" || workflowDisplayStatus === "queued" ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : workflowDisplayStatus === "succeeded" ? (
+                <CheckCircle2 className="size-3.5" />
+              ) : workflowDisplayStatus === "failed" ? (
+                <AlertTriangle className="size-3.5" />
+              ) : null}
+              报告生成工作流
+            </span>
+            <button
+              type="button"
+              aria-label="全屏查看工作流日志"
+              onClick={() => setWorkflowLogOpen(true)}
+              className="focus-ring rounded-md border border-ink-black/15 bg-parchment-cream/80 p-1.5 text-warm-stone transition hover:border-ink-black hover:text-ink-black"
+            >
+              <Maximize2 className="size-3.5" />
+            </button>
+          </div>
+          <p className="mt-1.5 text-xs leading-5 text-graphite">
+            {workflowSummary}
+          </p>
+          <div className="mt-2 h-1 rounded-full bg-ink-black/10">
+            <div
+              className={cn("h-1 rounded-full transition-all", workflowDisplayStatus === "failed" ? "bg-[#8b3228]" : "bg-ink-black")}
+              style={{ width: `${activeReportProgress}%` }}
+            />
+          </div>
+        </div>
+
+        <div className="mt-3 grid min-h-[230px] gap-3 md:grid-cols-[190px_minmax(0,1fr)]">
+          <div className="rounded-md border border-ink-black bg-ink-black px-2 py-2 text-parchment-cream">
+            <span className="flex items-center justify-between gap-2">
+              <span className="truncate text-xs font-medium">1. {currentProjectName}</span>
+              <StatusDot tone={workflowDisplayStatus === "failed" ? "danger" : workflowDisplayStatus === "succeeded" ? "success" : workflowDisplayStatus ? "active" : "neutral"} />
+            </span>
+            <span className="mt-1 block text-[11px] text-parchment-cream/70">
+              {runStatus?.businessStatus ?? workflowLabel(workflowDisplayStatus)}
+            </span>
+          </div>
+
+          <div className="min-w-0 rounded-lg border border-ink-black/12 p-3">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-xs text-warm-stone">当前任务 1/1</p>
+                <p className="mt-1 truncate text-sm font-medium">{currentProjectName}</p>
+              </div>
+              <Badge tone={workflowTone(workflowDisplayStatus)}>{workflowLabel(workflowDisplayStatus)}</Badge>
+            </div>
+            <div className="relative max-h-44 overflow-y-auto pr-1">
+              {reportWorkflowEvents.map((event, index) => (
+                <div key={`${event.time}-${event.label}-${index}`} className="relative grid grid-cols-[20px_minmax(0,1fr)] gap-3 pb-3 last:pb-0">
+                  {index < reportWorkflowEvents.length - 1 ? (
+                    <span className="absolute bottom-0 left-[7.5px] top-6 w-px bg-ink-black/18" />
+                  ) : null}
+                  <span className="relative z-10 mt-1 grid size-4 place-items-center rounded-full bg-parchment-cream">
+                    <StatusDot tone={event.state === "done" ? "success" : event.state === "active" ? "active" : "neutral"} />
+                  </span>
+                  <div className="min-w-0 rounded-md border border-ink-black/10 bg-parchment-cream/45 px-2.5 py-2">
+                    <p className="text-xs text-warm-stone">{event.time}</p>
+                    <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-5 text-graphite">{event.label}</p>
+                  </div>
+                </div>
+              ))}
+              {reportWorkflowEvents.length === 0 ? (
+                <p className="rounded-md border border-ink-black/10 p-3 text-sm text-warm-stone">暂无生成任务。点击右上角生成报告后查看进展。</p>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      </Card>
+
+      {reportBodyVisible ? (
       <div className="grid gap-4 xl:grid-cols-[220px_minmax(0,1fr)_300px]">
         <Card className="sticky top-24 max-h-[calc(100vh-7rem)] self-start overflow-y-auto p-4">
           <div
@@ -592,7 +1118,7 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
               <Button onClick={() => void handleExportWord(active?.title ?? "当前章节")} loading={busyAction === "export-word-section"} loadingText="导出中" disabled={interfaceBusy && busyAction !== "export-word-section"}><Download className="size-4" />下载章节 Word</Button>
               <Button onClick={() => revisionInputRef.current?.click()} loading={busyAction === "revision-upload"} loadingText="上传中" disabled={interfaceBusy && busyAction !== "revision-upload"}><Upload className="size-4" />上传更正版</Button>
               <Button onClick={() => void handleSaveDraft()} loading={busyAction === "save-draft"} loadingText="保存中" disabled={interfaceBusy && busyAction !== "save-draft"}><Save className="size-4" />保存记录</Button>
-              <Button onClick={() => void openPdfPreview("section")} loading={busyAction === "preview-section"} loadingText="准备中" disabled={interfaceBusy && busyAction !== "preview-section"}><Eye className="size-4" />全屏预览</Button>
+              <Button onClick={() => void openPdfPreview("report")} disabled={(interfaceBusy && busyAction !== "preview-report") || !pdfBlobUrl}><Eye className="size-4" />全屏预览</Button>
             </div>
           </div>
           <input
@@ -605,17 +1131,10 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
               event.currentTarget.value = "";
             }}
           />
-          <PdfPreviewSurface
-            activeTitle={active?.title ?? "报告"}
-            content={content[active?.id ?? ""] ?? active?.content ?? ""}
-            page={page}
-            zoom={zoom}
-            onPageChange={setPage}
-            onZoomChange={setZoom}
-            categoryName={activeCategory.name}
-            categoryTemplate={activeCategory.template}
-            revisionName={active ? uploadedRevisions[active.id] : undefined}
-            loading={busyAction === "preview-section"}
+          <GeneratedPdfPreview
+            pdfUrl={pdfBlobUrl}
+            fileName={pdfFileName || `${currentProjectName}_检测报告.pdf`}
+            full={false}
           />
         </Card>
 
@@ -645,16 +1164,56 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
           <Card>
             <h2 className="serif text-3xl">交付文件</h2>
             <div className="mt-4 space-y-3 text-sm">
-              <DeliveryRow icon={<FileText className="size-4" />} label="整份 Word" value="已生成" onClick={() => void handleExportWord()} loading={busyAction === "export-word-report"} disabled={interfaceBusy && busyAction !== "export-word-report"} />
-              <DeliveryRow icon={<FileDown className="size-4" />} label="整份 PDF" value="可预览" onClick={() => void handleExportPdf()} loading={busyAction === "export-pdf"} disabled={interfaceBusy && busyAction !== "export-pdf"} />
+              <DeliveryRow
+                icon={<FileText className="size-4" />}
+                label="整份 Word"
+                value={finalReportPath ? "已生成" : workflowJob?.status === "running" ? "生成中" : "待生成"}
+                onClick={() => void handleExportWord()}
+                loading={busyAction === "export-word-report"}
+                disabled={(interfaceBusy && busyAction !== "export-word-report") || !finalReportPath}
+              />
+              <DeliveryRow icon={<FileDown className="size-4" />} label="整份 PDF" value="已生成" onClick={() => void handleExportPdf()} loading={busyAction === "export-pdf"} disabled={(interfaceBusy && busyAction !== "export-pdf") || !finalReportPath || !pdfBlobUrl} />
               <DeliveryRow icon={<FileUp className="size-4" />} label="章节更正版" value={active && uploadedRevisions[active.id] ? "已上传" : "未上传"} onClick={() => revisionInputRef.current?.click()} loading={busyAction === "revision-upload"} disabled={interfaceBusy && busyAction !== "revision-upload"} />
+            </div>
+            {finalReportPath ? (
+              <p className="mt-3 break-all rounded-lg border border-ink-black/10 bg-white/25 px-3 py-2 text-xs leading-5 text-warm-stone">
+                {finalReportPath}
+              </p>
+            ) : null}
+            {pdfFilePath ? (
+              <p className="mt-2 break-all rounded-lg border border-ink-black/10 bg-mint-wash/25 px-3 py-2 text-xs leading-5 text-warm-stone">
+                {pdfFilePath}
+              </p>
+            ) : null}
+          </Card>
+          <Card>
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <h2 className="serif text-3xl">字段输入</h2>
+              <Badge tone={runStatusTone(runStatus?.businessStatus ?? runStatus?.status)}>{runStatus?.businessStatus ?? "未生成"}</Badge>
+            </div>
+            <div className="max-h-44 space-y-2 overflow-y-auto pr-1">
+              {runFields.slice(0, 8).map((field) => (
+                <div key={field.id} className="rounded-lg border border-ink-black/15 px-3 py-2 text-xs">
+                  <div className="flex items-center justify-between gap-2 text-warm-stone">
+                    <span className="min-w-0 truncate">{field.section ?? "main"}</span>
+                    <span>{field.confidence}%</span>
+                  </div>
+                  <div className="mt-1 truncate font-medium text-ink-black">{field.name}</div>
+                  <div className="mt-1 truncate text-graphite">{field.value || "空值"}</div>
+                </div>
+              ))}
+              {!runFields.length ? (
+                <div className="rounded-lg border border-dashed border-ink-black/20 px-3 py-6 text-center text-sm text-warm-stone">
+                  生成完成后显示本次 run 使用的字段。
+                </div>
+              ) : null}
             </div>
           </Card>
           <Card>
             <h2 className="serif text-3xl">版本历史</h2>
             <div className="mt-5 max-h-48 space-y-3 overflow-y-auto text-sm">
-              {versions.map((item) => (
-                <div key={item.id} className="flex items-center gap-2 rounded-lg border border-ink-black/15 px-3 py-2">
+              {versions.map((item, index) => (
+                <div key={`${item.id}-${index}`} className="flex items-center gap-2 rounded-lg border border-ink-black/15 px-3 py-2">
                   <span className="min-w-0 flex-1">{item.label}</span>
                   <button
                     type="button"
@@ -675,6 +1234,40 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
           </Card>
         </aside>
       </div>
+      ) : null}
+
+      {workflowLogOpen ? (
+        <div className="fixed inset-0 z-30 flex items-center justify-center bg-ink-black/35 p-4 backdrop-blur-sm" onClick={() => setWorkflowLogOpen(false)}>
+          <div className="flex h-[82vh] w-full max-w-[980px] flex-col rounded-xl border border-ink-black bg-parchment-cream shadow-editorial" onClick={(event) => event.stopPropagation()}>
+            <div className="flex items-start justify-between gap-4 border-b border-ink-black/15 px-5 py-4">
+              <div>
+                <p className="text-xs uppercase tracking-[0.12em] text-warm-stone">Workflow Log</p>
+                <h2 className="serif mt-1 text-[1.8rem] leading-tight">报告生成日志</h2>
+                <p className="mt-1 text-sm text-graphite">{activeRunId ? `Run ${activeRunId}` : "暂无 run"}</p>
+              </div>
+              <button type="button" aria-label="关闭日志" onClick={() => setWorkflowLogOpen(false)} className="rounded-md p-1.5 text-warm-stone transition hover:bg-ink-black/10 hover:text-ink-black">
+                <X className="size-5" />
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto p-5">
+              {workflowLogEvents.length ? (
+                <div className="space-y-2 text-sm leading-6 text-graphite">
+                  {workflowLogEvents.map((event, index) => (
+                    <div key={`${event.at}-${index}`} className="grid gap-2 rounded-lg border border-ink-black/10 bg-white/25 px-3 py-2 md:grid-cols-[92px_minmax(0,1fr)]">
+                      <span className="text-warm-stone">{new Date(event.at).toLocaleTimeString("zh-CN", { hour12: false })}</span>
+                      <span className="min-w-0 whitespace-pre-wrap break-words">{event.message}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="grid h-full place-items-center rounded-lg border border-dashed border-ink-black/20 text-sm text-warm-stone">
+                  暂无工作流日志。
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {pdfPreviewOpen ? (
         <div className="fixed inset-0 z-30 flex items-center justify-center bg-ink-black/35 p-4 backdrop-blur-sm" onClick={() => !busyAction && setPdfPreviewOpen(false)}>
@@ -691,17 +1284,9 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
               </button>
             </div>
             <div className="flex-1 overflow-y-auto p-4">
-              <PdfPreviewSurface
-                activeTitle={previewScope === "report" ? "整份报告" : active?.title ?? "报告"}
-                content={previewScope === "report" ? reportContent : content[active?.id ?? ""] ?? active?.content ?? ""}
-                page={page}
-                zoom={zoom}
-                onPageChange={setPage}
-                onZoomChange={setZoom}
-                categoryName={previewScope === "report" ? "整份报告" : activeCategory.name}
-                categoryTemplate={previewScope === "report" ? "项目默认报告模板" : activeCategory.template}
-                revisionName={previewScope === "section" && active ? uploadedRevisions[active.id] : undefined}
-                loading={busyAction === "preview-report" || busyAction === "preview-section"}
+              <GeneratedPdfPreview
+                pdfUrl={pdfBlobUrl}
+                fileName={pdfFileName || `${currentProjectName}_检测报告.pdf`}
                 full
               />
             </div>
@@ -717,8 +1302,20 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
                 <p className="text-xs uppercase tracking-[0.12em] text-warm-stone">Report Ready</p>
                 <h2 className="serif mt-1 text-[1.8rem] leading-tight">报告已生成</h2>
                 <p className="mt-2 text-sm leading-6 text-graphite">
-                  系统已生成 Word 初稿并同步转换 PDF 预览。请先预览整份报告排版，确认无误后导出 Word 与 PDF；章节级错误可回到目录中下载对应章节 Word 修改后上传。
+                  gen-report 工作流已生成最终 Word 报告。请先查看页面预览和字段摘要，确认无误后导出最终 Word；章节级错误可回到目录中下载对应章节 Word 修改后上传。
                 </p>
+                {finalReportPath ? <p className="mt-2 break-all text-xs leading-5 text-warm-stone">{finalReportPath}</p> : null}
+                {pdfStatus === "converting" || pdfStatus === "checking" ? (
+                  <p className="mt-2 inline-flex items-center gap-2 text-xs text-warm-stone">
+                    <Loader2 className="size-3.5 animate-spin" />
+                    正在准备最终 PDF 预览...
+                  </p>
+                ) : null}
+                {pdfStatus === "failed" && pdfError ? (
+                  <p className="mt-2 rounded-md border border-[#8b3228]/25 bg-[#f6d8d2]/45 px-3 py-2 text-xs leading-5 text-[#8b3228]">
+                    PDF 生成失败：{pdfError}
+                  </p>
+                ) : null}
               </div>
               <button type="button" aria-label="关闭生成结果" disabled={Boolean(busyAction)} onClick={() => setGeneratedDialogOpen(false)} className="disabled:cursor-not-allowed disabled:opacity-45">
                 <X className="size-5" />
@@ -733,12 +1330,12 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
                 }}
                 loading={busyAction === "preview-report"}
                 loadingText="准备中"
-                disabled={interfaceBusy && busyAction !== "preview-report"}
+                disabled={(interfaceBusy && busyAction !== "preview-report") || !pdfBlobUrl}
               >
                 <Eye className="size-4" />全屏预览
               </Button>
-              <Button className="w-full" onClick={() => void handleExportPdf()} loading={busyAction === "export-pdf"} loadingText="导出中" disabled={interfaceBusy && busyAction !== "export-pdf"}><FileDown className="size-4" />导出 PDF</Button>
-              <Button className="w-full" variant="primary" onClick={() => void handleExportWord()} loading={busyAction === "export-word-report"} loadingText="导出中" disabled={interfaceBusy && busyAction !== "export-word-report"}><Download className="size-4" />导出 Word</Button>
+              <Button className="w-full" onClick={() => void handleExportPdf()} loading={busyAction === "export-pdf" || pdfStatus === "checking" || pdfStatus === "converting"} loadingText={pdfStatus === "checking" || pdfStatus === "converting" ? "转换中" : "导出中"} disabled={(interfaceBusy && busyAction !== "export-pdf") || !finalReportPath}><FileDown className="size-4" />导出 PDF</Button>
+              <Button className="w-full" variant="primary" onClick={() => void handleExportWord()} loading={busyAction === "export-word-report"} loadingText="导出中" disabled={(interfaceBusy && busyAction !== "export-word-report") || !finalReportPath}><Download className="size-4" />导出 Word</Button>
             </div>
           </div>
         </div>
@@ -855,110 +1452,35 @@ export function ReportsClient({ sections: initialSections }: { sections: ReportS
   );
 }
 
-function PdfPreviewSurface({
-  activeTitle,
-  content,
-  page,
-  zoom,
-  onPageChange,
-  onZoomChange,
-  categoryName,
-  categoryTemplate,
-  revisionName,
-  loading = false,
+function GeneratedPdfPreview({
+  pdfUrl,
+  fileName,
   full = false
 }: {
-  activeTitle: string;
-  content: string;
-  page: number;
-  zoom: number;
-  onPageChange: (page: number) => void;
-  onZoomChange: (zoom: number) => void;
-  categoryName: string;
-  categoryTemplate: string;
-  revisionName?: string;
-  loading?: boolean;
+  pdfUrl: string;
+  fileName: string;
   full?: boolean;
 }) {
-  const safePage = Math.min(Math.max(page, 1), 3);
-  const scale = zoom / 100;
-  const pageWidth = full ? 680 : 720;
-  const pageHeight = 760;
-  const scaledWidth = pageWidth * scale;
-  const scaledHeight = pageHeight * scale;
   return (
     <div className="relative rounded-lg border border-ink-black/15 bg-white/45">
-      {loading ? (
-        <div className="absolute inset-0 z-10 grid place-items-center rounded-lg bg-parchment-cream/75 backdrop-blur-[2px]">
-          <div className="rounded-lg border border-ink-black/20 bg-parchment-cream px-4 py-3 text-sm shadow-editorial">
-            <span className="inline-flex items-center gap-2">
-              <Loader2 className="size-4 animate-spin" />
-              正在准备 PDF 预览
-            </span>
-          </div>
-        </div>
-      ) : null}
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-ink-black/15 px-3 py-2">
         <div className="flex min-w-0 items-center gap-2 text-xs text-graphite">
           <FileText className="size-4 shrink-0" />
-          <span className="truncate">PDF 预览：智能制造产线项目检测报告.pdf</span>
-          {revisionName ? <Badge tone="success">已载入更正版</Badge> : null}
-        </div>
-        <div className="flex items-center gap-1.5">
-          <button type="button" className="rounded-md border border-ink-black/20 p-1.5 hover:border-ink-black" onClick={() => onPageChange(Math.max(1, safePage - 1))} aria-label="上一页">
-            <ChevronLeft className="size-4" />
-          </button>
-          <span className="min-w-12 text-center text-xs text-graphite">{safePage}/3</span>
-          <button type="button" className="rounded-md border border-ink-black/20 p-1.5 hover:border-ink-black" onClick={() => onPageChange(Math.min(3, safePage + 1))} aria-label="下一页">
-            <ChevronRight className="size-4" />
-          </button>
-          <button type="button" className="rounded-md border border-ink-black/20 px-2 py-1 text-xs hover:border-ink-black" onClick={() => onZoomChange(Math.max(72, zoom - 8))}>-</button>
-          <span className="min-w-11 text-center text-xs text-graphite">{zoom}%</span>
-          <button type="button" className="rounded-md border border-ink-black/20 px-2 py-1 text-xs hover:border-ink-black" onClick={() => onZoomChange(Math.min(120, zoom + 8))}>+</button>
+          <span className="truncate">PDF 预览：{fileName}</span>
         </div>
       </div>
-      <div className={`${full ? "max-h-none" : "max-h-[66vh] min-h-[560px]"} overflow-auto p-4`}>
-        <div
-          className="relative mx-auto"
-          style={{ width: scaledWidth, height: scaledHeight }}
-        >
-          <div
-            className="absolute left-0 top-0 min-h-[760px] origin-top-left rounded-sm border border-ink-black/10 bg-[#fffdf8] p-10 shadow-editorial transition-transform"
-            style={{ width: pageWidth, height: pageHeight, transform: `scale(${scale})` }}
-          >
-            <div className="border-b border-ink-black pb-4 text-center">
-              <p className="text-xs uppercase tracking-[0.2em] text-warm-stone">Inspection Report</p>
-              <h3 className="serif mt-3 text-4xl">智能制造产线检测报告</h3>
-              <p className="mt-2 text-sm text-graphite">报告编号：RG-IML-2405-2024</p>
-            </div>
-            <div className="mt-8 grid grid-cols-[120px_1fr] gap-x-6 gap-y-3 text-sm leading-6">
-              <span className="text-warm-stone">当前章节</span>
-              <span className="font-medium">{activeTitle}</span>
-              <span className="text-warm-stone">章节类别</span>
-              <span>{categoryName}</span>
-              <span className="text-warm-stone">标准模板</span>
-              <span>{categoryTemplate}</span>
-              <span className="text-warm-stone">文件版本</span>
-              <span>{revisionName ? `人工更正版：${revisionName}` : "系统生成初稿"}</span>
-              <span className="text-warm-stone">页码</span>
-              <span>第 {safePage} 页 / 共 3 页</span>
-            </div>
-            <div className="mt-8 border-t border-ink-black/20 pt-6">
-              <h4 className="serif text-2xl">{safePage === 1 ? "封面与基础信息" : safePage === 2 ? activeTitle : "附件与签章"}</h4>
-              <div className="mt-4 whitespace-pre-wrap text-sm leading-7 text-graphite">
-                {safePage === 1
-                  ? "委托单位：某智能制造有限公司\n样品名称：智能制造产线\n型号规格：IML-2405\n检测日期：2024-05-20\n报告日期：2024-05-21"
-                  : safePage === 2
-                    ? content || "当前章节暂无正文内容。"
-                    : "原始记录、设备照片、解析日志与规则版本记录将作为附件随报告归档。\n\n编制：张工\n复核：待确认\n签发：待确认"}
-              </div>
-            </div>
-            <div className="mt-10 flex justify-between border-t border-ink-black/20 pt-4 text-xs text-warm-stone">
-              <span>智能检测报告生成系统</span>
-              <span>{safePage}</span>
-            </div>
+      <div className={cn(full ? "h-[calc(100vh-9rem)]" : "h-[66vh] min-h-[560px]", "overflow-hidden bg-white")}>
+        {pdfUrl ? (
+          <iframe
+            title={fileName}
+            src={pdfUrl}
+            className="h-full w-full border-0 bg-white"
+          />
+        ) : (
+          <div className="grid h-full place-items-center text-sm text-warm-stone">
+            PDF 尚未生成。
           </div>
-        </div>
+        )}
       </div>
     </div>
   );

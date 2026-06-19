@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { TdHTMLAttributes, ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 export function DataTable({
@@ -40,6 +40,14 @@ export function DataTable({
   );
 }
 
-export function Td({ children, className }: { children: ReactNode; className?: string }) {
-  return <td className={cn("border-t border-ink-black/10 px-3 py-2 align-middle", className)}>{children}</td>;
+export function Td({
+  children,
+  className,
+  ...props
+}: TdHTMLAttributes<HTMLTableCellElement> & { children: ReactNode }) {
+  return (
+    <td {...props} className={cn("border-t border-ink-black/10 px-3 py-2 align-middle", className)}>
+      {children}
+    </td>
+  );
 }
