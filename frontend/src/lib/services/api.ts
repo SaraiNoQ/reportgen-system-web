@@ -5,7 +5,6 @@ import {
   parseEvents,
   projectMetrics,
   projects,
-  rawFiles,
   reportSections,
   ruleTemplates,
   users
@@ -73,6 +72,70 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   return response.json() as Promise<T>;
+}
+
+function downloadFileName(response: Response, fallback: string) {
+  const disposition = response.headers.get("Content-Disposition") ?? "";
+  const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) return decodeURIComponent(utf8Match[1]);
+  const asciiMatch = disposition.match(/filename="?([^";]+)"?/i);
+  return asciiMatch?.[1] ? decodeURIComponent(asciiMatch[1]) : fallback;
+}
+
+async function downloadFromPost(path: string, body: unknown, fallbackFileName: string) {
+  const headers = new Headers();
+  headers.set("Content-Type", "application/json");
+  const auth = authHeader();
+  if (auth.Authorization) headers.set("Authorization", auth.Authorization);
+
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    cache: "no-store",
+    headers,
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    throw new CoreApiError(response.status, path);
+  }
+
+  const blob = await response.blob();
+  const fileName = downloadFileName(response, fallbackFileName);
+  if (typeof window !== "undefined") {
+    const url = window.URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = fileName;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.URL.revokeObjectURL(url);
+  }
+  return { fileName, status: "ready" as const };
+}
+
+async function blobFromPost(path: string, body: unknown, fallbackFileName: string) {
+  const headers = new Headers();
+  headers.set("Content-Type", "application/json");
+  const auth = authHeader();
+  if (auth.Authorization) headers.set("Authorization", auth.Authorization);
+
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    cache: "no-store",
+    headers,
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    throw new CoreApiError(response.status, path);
+  }
+
+  return {
+    blob: await response.blob(),
+    fileName: downloadFileName(response, fallbackFileName),
+    status: "ready" as const
+  };
 }
 
 async function withFallback<T>(request: () => Promise<T>, fallback: T): Promise<T> {
@@ -202,8 +265,9 @@ export const messageApi = {
 };
 
 export const recordApi = {
-  async files() {
-    return withFallback(() => requestJson<typeof rawFiles>("/records/files"), rawFiles);
+  async files(projectId?: string) {
+    const suffix = projectId ? `?${new URLSearchParams({ projectId }).toString()}` : "";
+    return requestJson<RawFile[]>(`/records/files${suffix}`);
   },
   async parseTimeline() {
     return withFallback(() => requestJson<typeof parseEvents>("/records/parse-timeline"), parseEvents);
@@ -214,23 +278,27 @@ export const recordApi = {
   async fields() {
     return withFallback(() => requestJson<typeof extractedFields>("/records/fields"), extractedFields);
   },
+  async fieldsByFile(projectId?: string) {
+    const suffix = projectId ? `?${new URLSearchParams({ projectId }).toString()}` : "";
+    return requestJson<Record<string, ExtractedField[]>>(`/records/fields-by-file${suffix}`);
+  },
   previewFile(fileId: string) {
     return requestJson<{ file: RawFile; previewType: string; message: string }>(
       `/records/files/${fileId}/preview`
     );
   },
-  exportResults() {
+  exportResults(projectId: string) {
     return postJson<{ fileName: string; formats: string[]; status: "ready" }>("/records/exports", {
-      projectId: "p1",
+      projectId,
       formats: ["excel", "json", "package"]
     });
   },
-  uploadFiles(files: Array<Pick<RawFile, "name" | "type" | "size" | "detectedType">>) {
+  uploadFiles(projectId: string, files: Array<Pick<RawFile, "name" | "type" | "size" | "detectedType">>) {
     return postJson<{
       files: RawFile[];
       parseEvents: Record<string, typeof parseEvents>;
       fields: Record<string, ExtractedField[]>;
-    }>("/records/uploads", { files });
+    }>("/records/uploads", { projectId, files });
   },
   async uploadFilesWithContent(projectId: string, files: File[]) {
     const form = new FormData();
@@ -287,9 +355,9 @@ export const reportApi = {
   async sections() {
     return withFallback(() => requestJson<typeof reportSections>("/reports/sections"), reportSections);
   },
-  generate(sectionCategories: Record<string, string>) {
+  generate(projectId: string, sectionCategories: Record<string, string>) {
     return postJson<{ sections: ReportSection[]; version: string; message: string }>("/reports/generate", {
-      projectId: "p1",
+      projectId,
       sectionCategories
     });
   },
@@ -313,6 +381,23 @@ export const reportApi = {
   },
   export(scope: string, format: "word" | "pdf") {
     return postJson<{ fileName: string; status: "ready" }>("/reports/exports", { scope, format });
+  },
+  generatedExportStatus(scope: string, format: "word" | "pdf", filePath: string) {
+    return postJson<{
+      format: "word" | "pdf";
+      exists: boolean;
+      fileName: string;
+      filePath?: string | null;
+      deliveryRecorded: boolean;
+    }>("/reports/export-status", { scope, format, filePath });
+  },
+  downloadGeneratedReport(scope: string, format: "word" | "pdf", filePath: string) {
+    const suffix = format === "word" ? "docx" : "pdf";
+    return downloadFromPost("/reports/exports", { scope, format, filePath }, `${scope}_检测报告.${suffix}`);
+  },
+  fetchGeneratedReportBlob(scope: string, format: "word" | "pdf", filePath: string) {
+    const suffix = format === "word" ? "docx" : "pdf";
+    return blobFromPost("/reports/exports", { scope, format, filePath }, `${scope}_检测报告.${suffix}`);
   },
   preview(scope: "report" | "section", sectionId?: string) {
     return postJson<{ fileName: string; status: "ready" }>("/reports/previews", {
@@ -379,6 +464,10 @@ export const genReportApi = {
   runProjectWorkflow(projectId: string) {
     return postJson<WorkflowJob>("/gen-report/projects/runs", { projectId });
   },
+  /** Build a project workspace and run only field extraction. */
+  extractProjectFields(projectId: string) {
+    return postJson<WorkflowJob>("/gen-report/projects/extract", { projectId });
+  },
   /** Poll the state of a workflow job. */
   getJob(jobId: string) {
     return requestJson<WorkflowJob>(`/gen-report/jobs/${jobId}`);
@@ -403,9 +492,15 @@ export const genReportApi = {
   },
   /** Generate report documents for a run. */
   generateRun(runId: string, section?: string | null) {
-    return postJson<{ status: string; sections: Record<string, string>; message: string }>(
+    return postJson<{ status: string; sections: Record<string, string>; message: string; final_report?: string; finalReport?: string }>(
       `/gen-report/runs/${runId}/generate`,
       section ? { section } : {}
     );
+  },
+  /** Open the generated report or workspace in the desktop/backend environment. */
+  openOutput(runId: string, target: "final_report" | "workspace") {
+    return postJson<{ status: string; path?: string; message?: string }>(`/gen-report/runs/${runId}/open-output`, {
+      target
+    });
   },
 };
