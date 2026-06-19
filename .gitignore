@@ -67,3 +67,6 @@ pnpm-debug.log*
 next-env.d.ts
 
 desktop/
+
+# Backend upload artifacts (test/dev binary uploads)
+backend/uploads/
