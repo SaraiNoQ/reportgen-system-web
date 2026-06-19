@@ -3,36 +3,42 @@
     "id": "e1",
     "name": "检验项目",
     "value": "平面度",
-    "confidence": 98
+    "confidence": 98,
+    "section": null
   },
   {
     "id": "e2",
     "name": "测量位置",
     "value": "左侧工作面",
-    "confidence": 96
+    "confidence": 96,
+    "section": null
   },
   {
     "id": "e3",
     "name": "实测值",
     "value": "0.012 mm",
-    "confidence": 98
+    "confidence": 98,
+    "section": null
   },
   {
     "id": "e4",
     "name": "标准值",
     "value": "0.020 mm",
-    "confidence": 97
+    "confidence": 97,
+    "section": null
   },
   {
     "id": "e5",
     "name": "单位",
     "value": "mm",
-    "confidence": 100
+    "confidence": 100,
+    "section": null
   },
   {
     "id": "e6",
     "name": "判定结果",
     "value": "合格",
-    "confidence": 99
+    "confidence": 99,
+    "section": null
   }
 ]
