@@ -14,6 +14,7 @@ HEALTH_URL="http://${BACKEND_HOST}:${BACKEND_PORT}/api/v1/health"
 
 INSTALL_MODE="prompt"
 SEED_MODE="prompt"
+MIGRATE_MODE="yes"
 
 PIDS=()
 NAMES=()
@@ -42,6 +43,7 @@ Options:
   --no-install    Skip dependency check; fail if deps are missing.
   --seed          Run database seed script before starting.
   --no-seed       Skip database seed check entirely.
+  --no-migrate    Skip Alembic migrations before starting.
   -h, --help      Show this help message.
 
 Environment overrides:
@@ -62,6 +64,32 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || die "Missing command: $1 — install it first."
 }
 
+port_listeners() {
+  local port="$1"
+
+  if ! command -v lsof >/dev/null 2>&1; then
+    return 0
+  fi
+
+  lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null \
+    | awk 'NR > 1 { print "  " $1 " pid=" $2 " " $9 }' \
+    || true
+}
+
+ensure_port_available() {
+  local label="$1"
+  local port="$2"
+  local env_name="$3"
+  local listeners
+
+  listeners="$(port_listeners "$port")"
+  if [ -n "$listeners" ]; then
+    err "${label} port ${port} is already in use."
+    printf '%s\n' "$listeners" >&2
+    die "Stop the existing process, or choose another port with ${env_name}=<port> ./dev.sh"
+  fi
+}
+
 # ── arg parsing ──────────────────────────────────────────────
 
 while [ "$#" -gt 0 ]; do
@@ -70,6 +98,7 @@ while [ "$#" -gt 0 ]; do
     --no-install) INSTALL_MODE="no";;
     --seed)       SEED_MODE="yes";;
     --no-seed)    SEED_MODE="no";;
+    --no-migrate) MIGRATE_MODE="no";;
     -h|--help)    usage; exit 0;;
     *)            die "Unknown option: $1";;
   esac
@@ -198,6 +227,23 @@ stop_postgres() {
 }
 
 # ── seed check ───────────────────────────────────────────────
+
+ensure_migrated() {
+  local backend_mode
+  backend_mode="$(detect_storage_backend)"
+
+  if [ "$backend_mode" != "postgres" ]; then
+    return 0
+  fi
+
+  if [ "$MIGRATE_MODE" = "no" ]; then
+    warn "Skipping Alembic migrations (--no-migrate)."
+    return 0
+  fi
+
+  log "Applying database migrations..."
+  (cd "$BACKEND_DIR" && uv run alembic upgrade head)
+}
 
 ensure_seeded() {
   local backend_mode
@@ -363,7 +409,10 @@ require_command pnpm
 ensure_deps
 ensure_backend_env
 ensure_postgres
+ensure_migrated
 ensure_seeded
+ensure_port_available "Backend" "$BACKEND_PORT" "BACKEND_PORT"
+ensure_port_available "Frontend" "$FRONTEND_PORT" "FRONTEND_PORT"
 
 backend_mode="$(detect_storage_backend)"
 mode_display="$([ "$backend_mode" = "postgres" ] && echo "PostgreSQL" || echo "Mock JSON")"
